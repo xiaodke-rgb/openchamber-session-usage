@@ -1,0 +1,259 @@
+/* session-usage 面板：跟随宿主主题（全部用 currentColor / color-mix），背景透明。 */
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+
+body {
+  font:
+    13px/1.55 system-ui,
+    -apple-system,
+    "Segoe UI",
+    "Microsoft YaHei",
+    sans-serif;
+  padding: 12px 12px 18px;
+  color: inherit;
+}
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.head .title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.head .updated {
+  font-size: 11px;
+  opacity: 0.58;
+  margin-left: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.refresh-slot {
+  flex: none;
+}
+
+.session-line {
+  font-size: 11px;
+  opacity: 0.62;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: -4px;
+}
+
+.tabs-slot:empty {
+  display: none;
+}
+
+.banner-slot:empty {
+  display: none;
+}
+
+.empty-slot:empty {
+  display: none;
+}
+
+.section {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 0.72;
+  margin-top: 2px;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.card {
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.card .k {
+  font-size: 11px;
+  opacity: 0.62;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card .v {
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.card .sub {
+  font-size: 10.5px;
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 14px;
+}
+
+.card.accent {
+  border-color: color-mix(in srgb, currentColor 26%, transparent);
+}
+
+.models,
+.child-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.model,
+.child {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 10px;
+  align-items: baseline;
+  padding: 5px 0;
+}
+
+.model + .model,
+.child + .child {
+  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.model .m-name {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model .m-sub,
+.child .c-sub {
+  font-size: 10.5px;
+  opacity: 0.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model .m-right,
+.child .c-right {
+  text-align: right;
+}
+
+.model .m-tokens,
+.child .c-tokens {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.model .m-cost,
+.child .c-cost {
+  font-size: 10.5px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+details.children {
+  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  padding-top: 2px;
+}
+
+details.children summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 0.72;
+  padding: 4px 0;
+  list-style: none;
+}
+
+details.children summary::-webkit-details-marker {
+  display: none;
+}
+
+details.children summary::before {
+  content: "▸ ";
+  opacity: 0.7;
+}
+
+details.children[open] summary::before {
+  content: "▾ ";
+}
+
+details.children .child-list {
+  padding-left: 2px;
+}
+
+.trend svg.spark {
+  display: block;
+  width: 100%;
+  height: 96px;
+}
+
+.trend .trend-meta,
+.trend .trend-times {
+  font-size: 10.5px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trend .trend-times {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.trend .muted {
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+.foot {
+  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  padding-top: 8px;
+  font-size: 10.5px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.muted {
+  opacity: 0.55;
+}
