@@ -8,10 +8,13 @@ import {
   mountBanner,
   mountButton,
   mountEmpty,
+  mountSelect,
   mountTabs,
   type BannerHandle,
   type ButtonHandle,
   type EmptyHandle,
+  type SelectHandle,
+  type SelectOption,
   type TabsHandle,
 } from '@openchamber/sdk/ui';
 
@@ -37,6 +40,7 @@ type ModelAgg = {
   requests: number;
   tokens: Tokens;
   cost: number;
+  billing: 'official' | 'recorded'; // official=官方峰谷价；recorded=OpenCode 记账
   currency: 'CNY' | 'USD';
   amount: number;
   official: OfficialCny | null;
@@ -79,6 +83,30 @@ type Report = {
 
 type Scope = 'total' | 'main';
 
+/** 计费白名单里的一行（GET/PUT /config）。 */
+type BillingRule = { provider: string; model: string };
+type CatalogEntry = {
+  provider: string;
+  model: string;
+  requests: number;
+  billing: 'official' | 'recorded';
+  officialPriced: boolean;
+};
+type HolidayStatus = {
+  counts: Record<string, number>;
+  builtinYears: number[];
+  cacheYears: number[];
+  extra: number;
+  updatedAt: number | null;
+};
+type ConfigPayload = {
+  ok: true;
+  config: { version: 1; seeded: boolean; billingModels: BillingRule[]; holidays: string[] };
+  catalog: CatalogEntry[];
+  holidays: HolidayStatus;
+  paths: { config: string; holidayCache: string };
+};
+
 // ---------------------------------------------------------------------------
 // i18n
 // ---------------------------------------------------------------------------
@@ -109,6 +137,31 @@ const L = {
     outputTip: (o: string, r: string) => `输出 ${o}，其中推理 ${r}`,
     totalTip: (t: string) => `input + output + reasoning + cacheRead + cacheWrite = ${t}`,
     byModel: '按模型',
+    billingTitle: '计费模型设置',
+    billingAdd: '添加计费模型',
+    billingPickProvider: '供应商',
+    billingPickModel: '模型',
+    billingRemove: '移除',
+    billingUnknownProvider: '（未知供应商）',
+    billingEmpty: '列表为空：所有模型都按 OpenCode 记账（免费模型即 $0）',
+    billingUnpriceable: '不适用官方价',
+    billingNote:
+      '列表里的「供应商 / 模型」按 DeepSeek 官方峰谷价重算人民币（周末与法定节假日按谷价，缓存写不计费）；其余模型一律用 OpenCode 记录的 USD（免费模型即 $0）。id 含 free 的模型不会按官方价算。',
+    billingTagOfficial: '官方',
+    billingTagRecorded: '记账',
+    billingTip: '计费方式：官方=按 DeepSeek 官方峰谷价重算（¥）；记账=OpenCode 记录的 USD',
+    billingLoadFailed: '读取计费设置失败',
+    billingSaveFailed: '计费设置保存失败',
+    holidayTitle: '节假日',
+    holidayNone: '暂无节假日数据',
+    holidayExtra: (n: number) => `手工追加 ${n} 天`,
+    holidayNever: '未同步过',
+    holidaySynced: (t: string) => `已同步 ${t}`,
+    holidaySync: '同步节假日',
+    holidaySyncing: '同步中…',
+    holidaySyncOk: (list: string) => `已更新 ${list}`,
+    holidaySyncFail: '同步失败，沿用已有数据',
+    holidayNote: '周末与中国法定节假日全天按谷价；数据来自 holiday-cn（MIT），只有点「同步节假日」才会联网。',
     children: (n: number) => `子会话明细（${n}）`,
     childSub: (req: number, hit: string) => `${req} 次请求 · 命中率 ${hit}`,
     childNested: (n: number) => `含 ${n} 层子会话`,
@@ -119,7 +172,7 @@ const L = {
     noTrend: '暂无请求',
     updatedAt: (t: string) => `更新于 ${t}`,
     loading: '正在读取用量…',
-    footer: (schema: string) => `数据源：opencode.db（${schema}）· 费用：DeepSeek=官方峰谷价重算（¥），其他=OpenCode 记账（$）`,
+    footer: (schema: string) => `数据源：opencode.db（${schema}）· 费用：计费列表内=DeepSeek 官方峰谷价（¥），其余=OpenCode 记账（$）`,
     emptyTitle: '暂无用量数据',
     emptyBody: '该会话还没有助手消息。发出第一条消息后统计会自动出现。',
     notConnected: '未连接会话',
@@ -154,6 +207,31 @@ const L = {
     outputTip: (o: string, r: string) => `output ${o}, of which reasoning ${r}`,
     totalTip: (t: string) => `input + output + reasoning + cacheRead + cacheWrite = ${t}`,
     byModel: 'By model',
+    billingTitle: 'Billing models',
+    billingAdd: 'Add billing model',
+    billingPickProvider: 'Provider',
+    billingPickModel: 'Model',
+    billingRemove: 'Remove',
+    billingUnknownProvider: '(unknown provider)',
+    billingEmpty: 'Empty list: every model uses OpenCode-recorded USD (free models are $0)',
+    billingUnpriceable: 'no official price',
+    billingNote:
+      'Models listed here are recomputed at DeepSeek official peak/off-peak CNY prices (weekends and Chinese public holidays are off-peak; cache writes not billed); every other model uses OpenCode-recorded USD (free models $0). Ids containing "free" are never priced officially.',
+    billingTagOfficial: 'official',
+    billingTagRecorded: 'recorded',
+    billingTip: 'Billing: official = recomputed at DeepSeek official peak/off-peak prices (¥); recorded = USD as recorded by OpenCode',
+    billingLoadFailed: 'Could not read billing settings',
+    billingSaveFailed: 'Could not save billing settings',
+    holidayTitle: 'Holidays',
+    holidayNone: 'No holiday data',
+    holidayExtra: (n: number) => `${n} manual date(s)`,
+    holidayNever: 'never synced',
+    holidaySynced: (t: string) => `synced ${t}`,
+    holidaySync: 'Sync holidays',
+    holidaySyncing: 'Syncing…',
+    holidaySyncOk: (list: string) => `updated ${list}`,
+    holidaySyncFail: 'Sync failed, kept existing data',
+    holidayNote: 'Weekends and Chinese public holidays are off-peak all day; data from holiday-cn (MIT). Only "Sync holidays" goes online.',
     children: (n: number) => `Subagent sessions (${n})`,
     childSub: (req: number, hit: string) => `${req} requests · hit ${hit}`,
     childNested: (n: number) => `${n} nested session(s)`,
@@ -164,7 +242,7 @@ const L = {
     noTrend: 'No requests yet',
     updatedAt: (t: string) => `updated ${t}`,
     loading: 'Loading usage…',
-    footer: (schema: string) => `Source: opencode.db (${schema}) · cost: DeepSeek = official peak/off-peak CNY; others = OpenCode-recorded USD`,
+    footer: (schema: string) => `Source: opencode.db (${schema}) · cost: listed models = DeepSeek official peak/off-peak CNY; others = OpenCode-recorded USD`,
     emptyTitle: 'No usage yet',
     emptyBody: 'This session has no assistant messages yet. Stats appear after the first reply.',
     notConnected: 'No session',
@@ -201,6 +279,13 @@ let sessionId: string | null = null;
 let scope: Scope = 'total';
 let lastReport: Report | null = null;
 let lastFetchAt = 0;
+
+// 计费设置（GET/PUT /config）
+let config: ConfigPayload | null = null;
+let rules: BillingRule[] = [];
+let ruleHandles: Array<{ provider: SelectHandle; model: SelectHandle; remove: ButtonHandle }> = [];
+let savingRules = false;
+let syncingHolidays = false;
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] => {
   const node = document.createElement(tag);
@@ -282,6 +367,15 @@ let kHit!: KpiCell;
 let kRequests!: KpiCell;
 let kCost!: KpiCell;
 let modelsEl!: HTMLElement;
+let settingsEl!: HTMLElement;
+let billingListEl!: HTMLElement;
+let billingAddSlot!: HTMLElement;
+let billingNoteEl!: HTMLElement;
+let holidayLineEl!: HTMLElement;
+let holidaySyncSlot!: HTMLElement;
+let holidayNoteEl!: HTMLElement;
+let billingAddHandle: ButtonHandle | null = null;
+let holidaySyncHandle: ButtonHandle | null = null;
 let childrenDetails!: HTMLDetailsElement;
 let childrenSummary!: HTMLElement;
 let childListEl!: HTMLElement;
@@ -331,6 +425,29 @@ function buildDom(): void {
   const modelTitle = el('div', 'section', t.byModel);
   modelsEl = el('div', 'models');
 
+  // 计费模型设置 + 节假日（数据来自 service 的 GET /config）
+  settingsEl = el('div', 'settings');
+  settingsEl.hidden = true;
+  const billingTitle = el('div', 'section', t.billingTitle);
+  billingTitle.title = t.billingTip;
+  billingListEl = el('div', 'rules');
+  billingAddSlot = el('div', 'rule-add');
+  billingNoteEl = el('div', 'rule-note', t.billingNote);
+  const holidayTitle = el('div', 'section', t.holidayTitle);
+  holidayLineEl = el('div', 'holiday-line', '');
+  holidaySyncSlot = el('div', 'holiday-sync');
+  holidayNoteEl = el('div', 'rule-note', t.holidayNote);
+  settingsEl.append(
+    billingTitle,
+    billingListEl,
+    billingAddSlot,
+    billingNoteEl,
+    holidayTitle,
+    holidayLineEl,
+    holidaySyncSlot,
+    holidayNoteEl,
+  );
+
   childrenDetails = document.createElement('details');
   childrenDetails.className = 'children';
   childrenSummary = el('summary', '', t.children(0));
@@ -347,7 +464,7 @@ function buildDom(): void {
 
   emptySlot = el('div', 'empty-slot');
 
-  wrap.append(head, subEl, tabsSlot, bannerSlot, bodyEl, emptySlot);
+  wrap.append(head, subEl, tabsSlot, bannerSlot, bodyEl, settingsEl, emptySlot);
   root.append(wrap);
 
   refreshHandle = mountButton(refreshSlot, {
@@ -367,6 +484,23 @@ function buildDom(): void {
       scope = id === 'main' ? 'main' : 'total';
       renderBody();
     },
+  });
+
+  billingAddHandle = mountButton(billingAddSlot, {
+    label: `＋ ${t.billingAdd}`,
+    size: 'xs',
+    variant: 'outline',
+    onClick: () => {
+      rules = [...rules, { provider: '', model: '' }];
+      renderBilling();
+    },
+  });
+
+  holidaySyncHandle = mountButton(holidaySyncSlot, {
+    label: t.holidaySync,
+    size: 'xs',
+    variant: 'outline',
+    onClick: () => void syncHolidayData(),
   });
 }
 
@@ -443,7 +577,8 @@ function renderBody(): void {
     for (const m of agg.byModel) {
       const row = el('div', 'model');
       const left = el('div');
-      left.append(el('div', 'm-name', m.model), el('div', 'm-sub', `${m.provider || '?'} · ${fmtInt(m.requests)} ×`));
+      const tag = m.billing === 'official' ? t.billingTagOfficial : t.billingTagRecorded;
+      left.append(el('div', 'm-name', m.model), el('div', 'm-sub', `${m.provider || '?'} · ${fmtInt(m.requests)} × · ${tag}`));
       const right = el('div', 'm-right');
       const costEl = el('div', 'm-cost', modelMoneyText(m));
       if (m.official) costEl.title = t.costPeakOff(fmtCny(m.official.peakCny), fmtCny(m.official.offCny));
@@ -599,6 +734,7 @@ async function refresh(): Promise<void> {
       hideEmpty();
       renderBody();
       updatedEl.textContent = T().updatedAt(fmtTime(lastFetchAt));
+      void ensureConfig();
     } else if (result.empty) {
       lastReport = null;
       clearBanner();
@@ -616,6 +752,210 @@ async function refresh(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// 计费模型设置 / 节假日（GET /config · PUT /config · POST /holidays/sync）
+// ---------------------------------------------------------------------------
+
+const rulesSignature = (list: BillingRule[]): string => list.map((r) => `${r.provider}/${r.model}`).join('|');
+
+const providerLabel = (provider: string): string => provider || T().billingUnknownProvider;
+
+function updateSettingsVisibility(): void {
+  if (!built) return;
+  settingsEl.hidden = config == null; // 没打开会话也允许先配好
+}
+
+function applyConfigPayload(next: ConfigPayload): void {
+  // 本地有未保存的编辑时不覆盖正在改的行
+  const dirty = config != null && rulesSignature(rules) !== rulesSignature(config.config.billingModels);
+  config = next;
+  if (!dirty) rules = next.config.billingModels.map((r) => ({ ...r }));
+  renderBilling();
+  renderHolidays();
+  updateSettingsVisibility();
+}
+
+async function loadConfig(): Promise<void> {
+  if (!built) return;
+  try {
+    if (MOCK) {
+      applyConfigPayload(mockConfig());
+      return;
+    }
+    const res = await host.serviceRequest({ method: 'GET', path: '/config' });
+    if (res.status !== 200) throw new Error(`http-${res.status}`);
+    applyConfigPayload(JSON.parse(res.body) as ConfigPayload);
+  } catch {
+    config = null;
+    updateSettingsVisibility();
+  }
+}
+
+/** 刷数据时顺带刷新模型清单（至少间隔 60s），避免长时间开着面板时下拉选项不更新。 */
+let lastConfigAt = 0;
+async function ensureConfig(): Promise<void> {
+  if (Date.now() - lastConfigAt < 60_000) return;
+  lastConfigAt = Date.now();
+  await loadConfig();
+}
+
+function disposeRuleHandles(): void {
+  for (const h of ruleHandles) {
+    h.provider.dispose();
+    h.model.dispose();
+    h.remove.dispose();
+  }
+  ruleHandles = [];
+}
+
+function renderBilling(): void {
+  if (!built) return;
+  const t = T();
+  disposeRuleHandles();
+  billingListEl.textContent = '';
+  if (!config) return;
+
+  const catalog = config.catalog ?? [];
+  if (!rules.length) {
+    billingListEl.append(el('div', 'muted', t.billingEmpty));
+    return;
+  }
+
+  const providers = [...new Set([...catalog.map((c) => c.provider), ...rules.map((r) => r.provider)])].sort((a, b) =>
+    providerLabel(a).localeCompare(providerLabel(b)),
+  );
+  // 选择后重建整段 DOM（延迟一拍，避免在 SDK 组件自己的事件回调里销毁它）
+  const rerender = (): void => {
+    setTimeout(() => renderBilling(), 0);
+  };
+
+  rules.forEach((rule, index) => {
+    const row = el('div', 'rule');
+    const providerSlot = el('div', 'rule-field');
+    const modelSlot = el('div', 'rule-field');
+    const delSlot = el('div', 'rule-del');
+
+    const providerOptions: SelectOption[] = providers.map((p) => ({
+      id: p,
+      label: providerLabel(p),
+      hint: String(catalog.filter((c) => c.provider === p).length),
+    }));
+    const modelOptions: SelectOption[] = catalog
+      .filter((c) => c.provider === rule.provider)
+      .map((c) => ({
+        id: c.model,
+        label: c.model,
+        hint: c.officialPriced ? `${fmtInt(c.requests)} ×` : `${fmtInt(c.requests)} × · ${t.billingUnpriceable}`,
+      }));
+    if (rule.model && !modelOptions.some((o) => o.id === rule.model)) {
+      modelOptions.unshift({ id: rule.model, label: rule.model });
+    }
+
+    const providerSel = mountSelect(providerSlot, {
+      value: rule.provider,
+      options: providerOptions,
+      searchable: true,
+      placeholder: t.billingPickProvider,
+      searchPlaceholder: t.billingPickProvider,
+      onChange: (id) => {
+        rules[index] = { provider: id ?? '', model: '' };
+        rerender();
+        void saveRules();
+      },
+    });
+    const modelSel = mountSelect(modelSlot, {
+      value: rule.model || null,
+      options: modelOptions,
+      searchable: true,
+      placeholder: t.billingPickModel,
+      searchPlaceholder: t.billingPickModel,
+      onChange: (id) => {
+        rules[index] = { provider: rules[index]?.provider ?? '', model: id ?? '' };
+        rerender();
+        void saveRules();
+      },
+    });
+    const removeHandle = mountButton(delSlot, {
+      label: '✕',
+      size: 'xs',
+      variant: 'ghost',
+      onClick: () => {
+        rules = rules.filter((_, i) => i !== index);
+        rerender();
+        void saveRules();
+      },
+    });
+    delSlot.title = t.billingRemove;
+
+    row.append(providerSlot, modelSlot, delSlot);
+    billingListEl.append(row);
+    ruleHandles.push({ provider: providerSel, model: modelSel, remove: removeHandle });
+  });
+}
+
+async function saveRules(): Promise<void> {
+  if (!built || savingRules) return;
+  savingRules = true;
+  const list = rules.filter((r) => r.model.trim() !== '');
+  try {
+    if (MOCK) {
+      if (config) applyConfigPayload({ ...config, config: { ...config.config, seeded: true, billingModels: list } });
+      return;
+    }
+    const res = await host.serviceRequest({
+      method: 'PUT',
+      path: '/config',
+      body: JSON.stringify({ billingModels: list }),
+    });
+    if (res.status !== 200) throw new Error(`http-${res.status}`);
+    applyConfigPayload(JSON.parse(res.body) as ConfigPayload);
+    void refresh();
+  } catch (err) {
+    setBanner('error', T().billingSaveFailed, err instanceof Error ? err.message : String(err), false);
+  } finally {
+    savingRules = false;
+  }
+}
+
+function renderHolidays(): void {
+  if (!built) return;
+  const t = T();
+  const status = config?.holidays;
+  holidayLineEl.hidden = !status;
+  holidaySyncSlot.hidden = !status;
+  holidayNoteEl.hidden = !status;
+  if (!config || !status) return;
+  const parts = Object.keys(status.counts)
+    .sort()
+    .map((year) => `${year}（${status.counts[year]} 天）`);
+  const synced = status.updatedAt ? t.holidaySynced(fmtDateTime(status.updatedAt)) : t.holidayNever;
+  const extra = status.extra > 0 ? ` · ${t.holidayExtra(status.extra)}` : '';
+  holidayLineEl.textContent = `${parts.length ? parts.join('、') : t.holidayNone} · ${synced}${extra}`;
+  holidayLineEl.title = config.paths.holidayCache;
+}
+
+async function syncHolidayData(): Promise<void> {
+  if (!built || syncingHolidays) return;
+  syncingHolidays = true;
+  holidaySyncHandle?.update({ loading: true, label: T().holidaySyncing });
+  try {
+    if (MOCK) return;
+    const res = await host.serviceRequest({ method: 'POST', path: '/holidays/sync' });
+    if (res.status !== 200) throw new Error(`http-${res.status}`);
+    const payload = JSON.parse(res.body) as { synced?: number[]; holidays?: HolidayStatus };
+    if (config && payload.holidays) config = { ...config, holidays: payload.holidays };
+    renderHolidays();
+    const synced = payload.synced ?? [];
+    if (synced.length) setBanner('info', T().holidaySyncOk(synced.join('、')), '', false);
+    else setBanner('warning', T().holidaySyncFail, '', false);
+  } catch (err) {
+    setBanner('warning', T().holidaySyncFail, err instanceof Error ? err.message : String(err), false);
+  } finally {
+    syncingHolidays = false;
+    holidaySyncHandle?.update({ loading: false, label: T().holidaySync });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 启动
 // ---------------------------------------------------------------------------
 
@@ -623,6 +963,7 @@ function boot(): void {
   if (booted) return;
   booted = true;
   void refresh();
+  void loadConfig();
   setInterval(() => {
     if (!document.hidden) void refresh();
   }, 15_000);
@@ -637,6 +978,7 @@ function applyHostSession(sid: string | null): void {
   lastReport = null;
   if (!built) return;
   renderBodyPlaceholder();
+  updateSettingsVisibility();
   void refresh();
 }
 
@@ -657,6 +999,7 @@ if (MOCK) {
   lastReport = mockReport(sessionId);
   hideEmpty();
   renderBody();
+  applyConfigPayload(mockConfig());
   updatedEl.textContent = T().updatedAt(fmtTime(Date.now()));
 } else {
   host.onReady((ctx) => {
@@ -722,6 +1065,7 @@ function mockReport(sid: string): Report {
     requests: 71,
     tokens: tok(470000, 24000, 180000, 5600000, 0),
     cost: 0.2,
+    billing: 'official',
     currency: 'CNY',
     amount: 0.4193,
     official: { cny: 0.4193, peakCny: 0.1564, offCny: 0.2629 },
@@ -732,6 +1076,7 @@ function mockReport(sid: string): Report {
     requests: 6,
     tokens: tok(37271, 3357, 14259, 209920, 0),
     cost: 0.02649,
+    billing: 'recorded',
     currency: 'USD',
     amount: 0.02649,
     official: null,
@@ -817,5 +1162,37 @@ function mockReport(sid: string): Report {
         ot ? money(0, 0, 0, 0.00298, 0.00298) : money(0.0034, 0.0011, 0.0023, 0, 0.0034),
       ),
     ],
+  };
+}
+
+/** ?mock=1 预览用的计费设置（不发请求）。 */
+function mockConfig(): ConfigPayload {
+  const ds = params.get('case') !== 'other';
+  const ot = params.get('case') !== 'pure';
+  const catalog: CatalogEntry[] = [
+    { provider: 'opencode', model: 'deepseek-v4.1-flash-free', requests: 36, billing: 'recorded', officialPriced: false },
+    { provider: 'deepseek', model: 'deepseek-flash', requests: 8, billing: ds ? 'official' : 'recorded', officialPriced: true },
+    { provider: 'deepseek', model: 'deepseek-pro', requests: 2, billing: ds ? 'official' : 'recorded', officialPriced: true },
+  ];
+  if (ot) catalog.push({ provider: 'xai', model: 'grok-4.7', requests: 6, billing: 'recorded', officialPriced: false });
+  return {
+    ok: true,
+    config: {
+      version: 1,
+      seeded: true,
+      billingModels: ds
+        ? [
+            { provider: 'deepseek', model: 'deepseek-flash' },
+            { provider: 'deepseek', model: 'deepseek-pro' },
+          ]
+        : [],
+      holidays: [],
+    },
+    catalog,
+    holidays: { counts: { '2026': 19 }, builtinYears: [2026], cacheYears: [], extra: 0, updatedAt: null },
+    paths: {
+      config: '~/.config/openchamber/session-usage.json',
+      holidayCache: '~/.config/openchamber/session-usage-holidays.json',
+    },
   };
 }

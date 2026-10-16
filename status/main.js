@@ -1895,9 +1895,11 @@ ${GUEST_UI_LOOK_CSS}`;
   };
   var fmtUsd = (n) => `$${n >= 1 ? n.toFixed(2) : n >= 0.01 ? n.toFixed(3) : n.toFixed(4)}`;
   var fmtCny = (n) => `\xA5${n.toFixed(4)}`;
-  var moneyText = (m) => {
-    if (m.hasDeepseek) return m.hasOther ? `${fmtCny(m.costCny)} + ${fmtUsd(m.costUsdOther)}` : fmtCny(m.costCny);
-    return fmtUsd(m.cost);
+  var moneyParts = (m) => {
+    if (!m.hasDeepseek) return { value: fmtUsd(m.cost), sub: "" };
+    const value = fmtCny(m.costCny);
+    if (!m.hasOther || m.costUsdOther <= 0) return { value, sub: "" };
+    return { value, sub: `+ ${fmtUsd(m.costUsdOther)}` };
   };
   var costTipText = (m) => T().costTip(fmtCny(m.costCnyPeak), fmtCny(m.costCnyOff), m.hasDeepseek);
   var fmtPct = (r) => r == null ? "\u2014" : `${(r * 100).toFixed(1)}%`;
@@ -1921,6 +1923,17 @@ ${GUEST_UI_LOOK_CSS}`;
     grid.append(cell);
     return { cell, value };
   }
+  function addSubLine(cell) {
+    const sub = el2("div", "s", "");
+    sub.hidden = true;
+    cell.cell.append(sub);
+    cell.sub = sub;
+  }
+  function setSubLine(cell, text) {
+    if (!cell.sub) return;
+    cell.sub.textContent = text;
+    cell.sub.hidden = !text;
+  }
   function buildDom() {
     if (built) return;
     built = true;
@@ -1930,6 +1943,7 @@ ${GUEST_UI_LOOK_CSS}`;
     cTokens = makeCell(grid, t.kTokens);
     cHit = makeCell(grid, t.kHit, t.hitTip, true);
     cCost = makeCell(grid, t.kCost);
+    addSubLine(cCost);
     cReq = makeCell(grid, t.kRequests);
     const foot = el2("div", "foot");
     footTitle = el2("span", "s-title", "");
@@ -1963,8 +1977,10 @@ ${GUEST_UI_LOOK_CSS}`;
       cTokens.value.textContent = fmtTokens(a.tokens.total);
       cTokens.value.title = fmtInt(a.tokens.total);
       cHit.value.textContent = fmtPct(a.hitRate);
-      cCost.value.textContent = moneyText(a);
+      const cost = moneyParts(a);
+      cCost.value.textContent = cost.value;
       cCost.cell.title = costTipText(a);
+      setSubLine(cCost, cost.sub);
       cReq.value.textContent = fmtInt(a.requests);
       footTitle.textContent = report.session.title || report.session.id;
       const scopeText = report.session.descendantCount > 0 ? t.withSub : "";
@@ -1975,6 +1991,7 @@ ${GUEST_UI_LOOK_CSS}`;
       cHit.value.textContent = "\u2014";
       cCost.value.textContent = "\u2014";
       cCost.cell.title = "";
+      setSubLine(cCost, "");
       cReq.value.textContent = "\u2014";
       if (state === "no-session") {
         footTitle.textContent = t.noSession;

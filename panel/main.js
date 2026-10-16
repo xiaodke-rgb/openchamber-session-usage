@@ -1740,6 +1740,25 @@ ${GUEST_UI_LOOK_CSS}`;
       node.textContent = next;
     }
   };
+  var setAttr = (node, name, value) => {
+    if (value === void 0 || value === null || value === "") {
+      node.removeAttribute(name);
+    } else if (node.getAttribute(name) !== value) {
+      node.setAttribute(name, value);
+    }
+  };
+  var onOutsideClick = (node, handler) => {
+    const listener = (event) => {
+      if (event.target instanceof Node && node.contains(event.target)) {
+        return;
+      }
+      handler();
+    };
+    document.addEventListener("pointerdown", listener, true);
+    return () => {
+      document.removeEventListener("pointerdown", listener, true);
+    };
+  };
 
   // node_modules/@openchamber/sdk/dist/ui/button.js
   var ring = () => {
@@ -1789,6 +1808,30 @@ ${GUEST_UI_LOOK_CSS}`;
     };
   };
 
+  // node_modules/@openchamber/sdk/dist/ui/icons.js
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var ICON_PATH = {
+    search: "M18.031 16.617l4.283 4.282-1.415 1.415-4.282-4.283A8.96 8.96 0 0 1 11 20c-4.968 0-9-4.032-9-9s4.032-9 9-9 9 4.032 9 9a8.96 8.96 0 0 1-1.969 5.617zm-2.006-.742A6.977 6.977 0 0 0 18 11c0-3.868-3.133-7-7-7-3.868 0-7 3.132-7 7 0 3.867 3.132 7 7 7a6.977 6.977 0 0 0 4.875-1.975l.15-.15z",
+    chevron: "M12 13.172l4.95-4.95 1.414 1.414L12 16 5.636 9.636 7.05 8.222z",
+    check: "M10 15.172l9.192-9.193 1.415 1.414L10 18l-6.364-6.364 1.414-1.414z",
+    close: "M12 10.586l4.95-4.95 1.414 1.414-4.95 4.95 4.95 4.95-1.414 1.414-4.95-4.95-4.95 4.95-1.414-1.414 4.95-4.95-4.95-4.95L7.05 5.636z"
+  };
+  var icon = (name, size, className) => {
+    const node = document.createElementNS(SVG_NS, "svg");
+    node.setAttribute("viewBox", "0 0 24 24");
+    node.setAttribute("width", String(size));
+    node.setAttribute("height", String(size));
+    node.setAttribute("aria-hidden", "true");
+    node.setAttribute("fill", "currentColor");
+    if (className) {
+      node.setAttribute("class", className);
+    }
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", ICON_PATH[name]);
+    node.append(path);
+    return node;
+  };
+
   // node_modules/@openchamber/sdk/dist/ui/navigation.js
   var navigationKey = (event, axis = "vertical") => {
     const [next, previous] = axis === "vertical" ? ["ArrowDown", "ArrowUp"] : ["ArrowRight", "ArrowLeft"];
@@ -1821,6 +1864,243 @@ ${GUEST_UI_LOOK_CSS}`;
     }
     const target = enabled[Math.min(enabled.length - 1, Math.max(0, index + (key === "next" ? 1 : -1)))];
     return target?.id ?? null;
+  };
+
+  // node_modules/@openchamber/sdk/dist/ui/option.js
+  var optionId = (uid, id) => `${uid}-${id ?? ""}`;
+  var createOption = (uid, role, spec, on) => {
+    const node = button("oc-sdk-option");
+    node.id = optionId(uid, spec.id);
+    node.setAttribute("role", role);
+    node.tabIndex = -1;
+    node.disabled = Boolean(spec.disabled);
+    if (role === "option") {
+      node.setAttribute("aria-selected", spec.selected ? "true" : "false");
+    }
+    node.dataset.destructive = spec.destructive ? "true" : "false";
+    const label = el("span", "oc-sdk-option-label");
+    label.textContent = spec.label;
+    node.append(label);
+    if (spec.hint) {
+      const hint = el("span", "oc-sdk-option-hint");
+      hint.textContent = spec.hint;
+      node.append(hint);
+    }
+    if (role === "option") {
+      node.dataset.mark = "check";
+      const check = el("span", "oc-sdk-option-check");
+      check.append(icon("check", 14));
+      node.append(check);
+    }
+    node.addEventListener("pointerenter", on.hover);
+    node.addEventListener("click", on.pick);
+    return node;
+  };
+  var highlightOption = (container, focusOwner, uid, id) => {
+    const target = optionId(uid, id);
+    for (const child of Array.from(container.children)) {
+      if (child instanceof HTMLElement && child.classList.contains("oc-sdk-option")) {
+        child.dataset.active = child.id === target ? "true" : "false";
+      }
+    }
+    setAttr(focusOwner, "aria-activedescendant", id ? target : null);
+    container.querySelector('[data-active="true"]')?.scrollIntoView({ block: "nearest" });
+  };
+
+  // node_modules/@openchamber/sdk/dist/ui/popup.js
+  var placePopup = (popup, trigger) => {
+    const rect = trigger.getBoundingClientRect();
+    popup.style.minWidth = `${Math.round(rect.width)}px`;
+    popup.style.left = `${Math.round(rect.left)}px`;
+    popup.style.top = `${Math.round(rect.bottom + 4)}px`;
+    const height = popup.offsetHeight;
+    const roomBelow = window.innerHeight - rect.bottom - 8;
+    if (height > roomBelow && rect.top - 8 > roomBelow) {
+      popup.style.top = `${Math.max(8, Math.round(rect.top - 4 - height))}px`;
+    }
+    const overflow = rect.left + popup.offsetWidth - window.innerWidth + 8;
+    if (overflow > 0) {
+      popup.style.left = `${Math.max(8, Math.round(rect.left - overflow))}px`;
+    }
+  };
+  var openPopup = (host2, trigger, popup, close) => {
+    host2.append(popup);
+    placePopup(popup, trigger);
+    const stopOutside = onOutsideClick(host2, close);
+    const onResize = () => {
+      close();
+    };
+    const onScroll = (event) => {
+      if (event.target instanceof Node && popup.contains(event.target)) {
+        return;
+      }
+      close();
+    };
+    window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      stopOutside();
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onScroll, true);
+      popup.remove();
+    };
+  };
+
+  // node_modules/@openchamber/sdk/dist/ui/select.js
+  var filterSelectOptions = (options, query) => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) {
+      return [...options];
+    }
+    return options.filter((option) => option.label.toLowerCase().includes(needle) || option.id.toLowerCase().includes(needle));
+  };
+  var selectCount = 0;
+  var mountSelect = (root2, initial) => {
+    ensureStyle(UI_CSS);
+    let props = initial;
+    const uid = `oc-sdk-select-${selectCount += 1}`;
+    const wrap = el("div", "oc-sdk oc-sdk-select");
+    const caption = el("span", "oc-sdk-field-label");
+    caption.id = `${uid}-label`;
+    const trigger = button("oc-sdk-trigger");
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-labelledby", caption.id);
+    const value = el("span", "oc-sdk-trigger-value");
+    trigger.append(value, icon("chevron", 14, "oc-sdk-trigger-chevron"));
+    wrap.append(caption, trigger);
+    root2.append(wrap);
+    let query = "";
+    let activeId = null;
+    let closePopup = null;
+    const popup = el("div", "oc-sdk oc-sdk-popup");
+    const searchSlot = el("div", "oc-sdk-popup-search");
+    const search = el("input", "oc-sdk-input");
+    search.type = "text";
+    search.autocomplete = "off";
+    searchSlot.append(search);
+    const listbox = el("div");
+    listbox.setAttribute("role", "listbox");
+    listbox.tabIndex = -1;
+    popup.append(listbox);
+    const visible = () => filterSelectOptions(props.options, props.searchable ? query : "");
+    const focusOwner = () => props.searchable ? search : listbox;
+    const setActive = (id) => {
+      activeId = id;
+      highlightOption(listbox, focusOwner(), uid, id);
+    };
+    const paintOptions = () => {
+      clearNode(listbox);
+      const options = visible();
+      if (options.length === 0) {
+        const empty = el("div", "oc-sdk-popup-empty");
+        empty.textContent = "No matches";
+        listbox.append(empty);
+      }
+      for (const option of options) {
+        listbox.append(createOption(uid, "option", { ...option, selected: option.id === props.value }, {
+          hover: () => setActive(option.id),
+          pick: () => pick(option.id)
+        }));
+      }
+      setActive(options.some((option) => option.id === activeId) ? activeId : options[0]?.id ?? null);
+    };
+    const close = () => {
+      const dispose = closePopup;
+      closePopup = null;
+      dispose?.();
+      query = "";
+      search.value = "";
+      trigger.setAttribute("aria-expanded", "false");
+    };
+    const open = () => {
+      if (closePopup || props.disabled) {
+        return;
+      }
+      activeId = props.value;
+      search.placeholder = props.searchPlaceholder ?? "Search";
+      if (props.searchable)
+        popup.prepend(searchSlot);
+      else
+        searchSlot.remove();
+      paintOptions();
+      closePopup = openPopup(wrap, trigger, popup, close);
+      trigger.setAttribute("aria-expanded", "true");
+      focusOwner().focus();
+    };
+    const pick = (id) => {
+      close();
+      trigger.focus();
+      if (id !== props.value)
+        props.onChange(id);
+    };
+    const onTriggerClick = () => {
+      if (closePopup)
+        close();
+      else
+        open();
+    };
+    const onTriggerKey = (event) => {
+      if (!closePopup && navigationKey(event)) {
+        event.preventDefault();
+        open();
+      }
+    };
+    const onPopupKey = (event) => {
+      const step = navigationKey(event);
+      if (step) {
+        event.preventDefault();
+        setActive(moveListSelection(visible(), activeId, step));
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        if (activeId)
+          pick(activeId);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        trigger.focus();
+      } else if (props.searchable && event.target !== search && event.key.length === 1 && !event.ctrlKey && !event.metaKey) {
+        search.focus();
+      }
+    };
+    const onSearchInput = () => {
+      query = search.value;
+      paintOptions();
+    };
+    const onFocusOut = (event) => {
+      if (closePopup && !(event.relatedTarget instanceof Node && wrap.contains(event.relatedTarget)))
+        close();
+    };
+    const paint = () => {
+      setText(caption, props.label);
+      caption.hidden = !props.label;
+      const current = props.options.find((option) => option.id === props.value);
+      setText(value, current?.label ?? props.placeholder ?? "Select");
+      value.dataset.empty = current ? "false" : "true";
+      trigger.disabled = Boolean(props.disabled);
+      if (closePopup)
+        paintOptions();
+    };
+    trigger.addEventListener("click", onTriggerClick);
+    trigger.addEventListener("keydown", onTriggerKey);
+    popup.addEventListener("keydown", onPopupKey);
+    search.addEventListener("input", onSearchInput);
+    wrap.addEventListener("focusout", onFocusOut);
+    paint();
+    return {
+      update: (next) => {
+        props = { ...props, ...next };
+        paint();
+      },
+      dispose: () => {
+        close();
+        trigger.removeEventListener("click", onTriggerClick);
+        trigger.removeEventListener("keydown", onTriggerKey);
+        popup.removeEventListener("keydown", onPopupKey);
+        search.removeEventListener("input", onSearchInput);
+        wrap.removeEventListener("focusout", onFocusOut);
+        wrap.remove();
+      }
+    };
   };
 
   // node_modules/@openchamber/sdk/dist/ui/tabs.js
@@ -1993,6 +2273,30 @@ ${GUEST_UI_LOOK_CSS}`;
       outputTip: (o, r) => `\u8F93\u51FA ${o}\uFF0C\u5176\u4E2D\u63A8\u7406 ${r}`,
       totalTip: (t) => `input + output + reasoning + cacheRead + cacheWrite = ${t}`,
       byModel: "\u6309\u6A21\u578B",
+      billingTitle: "\u8BA1\u8D39\u6A21\u578B\u8BBE\u7F6E",
+      billingAdd: "\u6DFB\u52A0\u8BA1\u8D39\u6A21\u578B",
+      billingPickProvider: "\u4F9B\u5E94\u5546",
+      billingPickModel: "\u6A21\u578B",
+      billingRemove: "\u79FB\u9664",
+      billingUnknownProvider: "\uFF08\u672A\u77E5\u4F9B\u5E94\u5546\uFF09",
+      billingEmpty: "\u5217\u8868\u4E3A\u7A7A\uFF1A\u6240\u6709\u6A21\u578B\u90FD\u6309 OpenCode \u8BB0\u8D26\uFF08\u514D\u8D39\u6A21\u578B\u5373 $0\uFF09",
+      billingUnpriceable: "\u4E0D\u9002\u7528\u5B98\u65B9\u4EF7",
+      billingNote: "\u5217\u8868\u91CC\u7684\u300C\u4F9B\u5E94\u5546 / \u6A21\u578B\u300D\u6309 DeepSeek \u5B98\u65B9\u5CF0\u8C37\u4EF7\u91CD\u7B97\u4EBA\u6C11\u5E01\uFF08\u5468\u672B\u4E0E\u6CD5\u5B9A\u8282\u5047\u65E5\u6309\u8C37\u4EF7\uFF0C\u7F13\u5B58\u5199\u4E0D\u8BA1\u8D39\uFF09\uFF1B\u5176\u4F59\u6A21\u578B\u4E00\u5F8B\u7528 OpenCode \u8BB0\u5F55\u7684 USD\uFF08\u514D\u8D39\u6A21\u578B\u5373 $0\uFF09\u3002id \u542B free \u7684\u6A21\u578B\u4E0D\u4F1A\u6309\u5B98\u65B9\u4EF7\u7B97\u3002",
+      billingTagOfficial: "\u5B98\u65B9",
+      billingTagRecorded: "\u8BB0\u8D26",
+      billingTip: "\u8BA1\u8D39\u65B9\u5F0F\uFF1A\u5B98\u65B9=\u6309 DeepSeek \u5B98\u65B9\u5CF0\u8C37\u4EF7\u91CD\u7B97\uFF08\xA5\uFF09\uFF1B\u8BB0\u8D26=OpenCode \u8BB0\u5F55\u7684 USD",
+      billingLoadFailed: "\u8BFB\u53D6\u8BA1\u8D39\u8BBE\u7F6E\u5931\u8D25",
+      billingSaveFailed: "\u8BA1\u8D39\u8BBE\u7F6E\u4FDD\u5B58\u5931\u8D25",
+      holidayTitle: "\u8282\u5047\u65E5",
+      holidayNone: "\u6682\u65E0\u8282\u5047\u65E5\u6570\u636E",
+      holidayExtra: (n) => `\u624B\u5DE5\u8FFD\u52A0 ${n} \u5929`,
+      holidayNever: "\u672A\u540C\u6B65\u8FC7",
+      holidaySynced: (t) => `\u5DF2\u540C\u6B65 ${t}`,
+      holidaySync: "\u540C\u6B65\u8282\u5047\u65E5",
+      holidaySyncing: "\u540C\u6B65\u4E2D\u2026",
+      holidaySyncOk: (list) => `\u5DF2\u66F4\u65B0 ${list}`,
+      holidaySyncFail: "\u540C\u6B65\u5931\u8D25\uFF0C\u6CBF\u7528\u5DF2\u6709\u6570\u636E",
+      holidayNote: "\u5468\u672B\u4E0E\u4E2D\u56FD\u6CD5\u5B9A\u8282\u5047\u65E5\u5168\u5929\u6309\u8C37\u4EF7\uFF1B\u6570\u636E\u6765\u81EA holiday-cn\uFF08MIT\uFF09\uFF0C\u53EA\u6709\u70B9\u300C\u540C\u6B65\u8282\u5047\u65E5\u300D\u624D\u4F1A\u8054\u7F51\u3002",
       children: (n) => `\u5B50\u4F1A\u8BDD\u660E\u7EC6\uFF08${n}\uFF09`,
       childSub: (req, hit) => `${req} \u6B21\u8BF7\u6C42 \xB7 \u547D\u4E2D\u7387 ${hit}`,
       childNested: (n) => `\u542B ${n} \u5C42\u5B50\u4F1A\u8BDD`,
@@ -2002,7 +2306,7 @@ ${GUEST_UI_LOOK_CSS}`;
       noTrend: "\u6682\u65E0\u8BF7\u6C42",
       updatedAt: (t) => `\u66F4\u65B0\u4E8E ${t}`,
       loading: "\u6B63\u5728\u8BFB\u53D6\u7528\u91CF\u2026",
-      footer: (schema) => `\u6570\u636E\u6E90\uFF1Aopencode.db\uFF08${schema}\uFF09\xB7 \u8D39\u7528\uFF1ADeepSeek=\u5B98\u65B9\u5CF0\u8C37\u4EF7\u91CD\u7B97\uFF08\xA5\uFF09\uFF0C\u5176\u4ED6=OpenCode \u8BB0\u8D26\uFF08$\uFF09`,
+      footer: (schema) => `\u6570\u636E\u6E90\uFF1Aopencode.db\uFF08${schema}\uFF09\xB7 \u8D39\u7528\uFF1A\u8BA1\u8D39\u5217\u8868\u5185=DeepSeek \u5B98\u65B9\u5CF0\u8C37\u4EF7\uFF08\xA5\uFF09\uFF0C\u5176\u4F59=OpenCode \u8BB0\u8D26\uFF08$\uFF09`,
       emptyTitle: "\u6682\u65E0\u7528\u91CF\u6570\u636E",
       emptyBody: "\u8BE5\u4F1A\u8BDD\u8FD8\u6CA1\u6709\u52A9\u624B\u6D88\u606F\u3002\u53D1\u51FA\u7B2C\u4E00\u6761\u6D88\u606F\u540E\u7EDF\u8BA1\u4F1A\u81EA\u52A8\u51FA\u73B0\u3002",
       notConnected: "\u672A\u8FDE\u63A5\u4F1A\u8BDD",
@@ -2034,6 +2338,30 @@ ${GUEST_UI_LOOK_CSS}`;
       outputTip: (o, r) => `output ${o}, of which reasoning ${r}`,
       totalTip: (t) => `input + output + reasoning + cacheRead + cacheWrite = ${t}`,
       byModel: "By model",
+      billingTitle: "Billing models",
+      billingAdd: "Add billing model",
+      billingPickProvider: "Provider",
+      billingPickModel: "Model",
+      billingRemove: "Remove",
+      billingUnknownProvider: "(unknown provider)",
+      billingEmpty: "Empty list: every model uses OpenCode-recorded USD (free models are $0)",
+      billingUnpriceable: "no official price",
+      billingNote: 'Models listed here are recomputed at DeepSeek official peak/off-peak CNY prices (weekends and Chinese public holidays are off-peak; cache writes not billed); every other model uses OpenCode-recorded USD (free models $0). Ids containing "free" are never priced officially.',
+      billingTagOfficial: "official",
+      billingTagRecorded: "recorded",
+      billingTip: "Billing: official = recomputed at DeepSeek official peak/off-peak prices (\xA5); recorded = USD as recorded by OpenCode",
+      billingLoadFailed: "Could not read billing settings",
+      billingSaveFailed: "Could not save billing settings",
+      holidayTitle: "Holidays",
+      holidayNone: "No holiday data",
+      holidayExtra: (n) => `${n} manual date(s)`,
+      holidayNever: "never synced",
+      holidaySynced: (t) => `synced ${t}`,
+      holidaySync: "Sync holidays",
+      holidaySyncing: "Syncing\u2026",
+      holidaySyncOk: (list) => `updated ${list}`,
+      holidaySyncFail: "Sync failed, kept existing data",
+      holidayNote: 'Weekends and Chinese public holidays are off-peak all day; data from holiday-cn (MIT). Only "Sync holidays" goes online.',
       children: (n) => `Subagent sessions (${n})`,
       childSub: (req, hit) => `${req} requests \xB7 hit ${hit}`,
       childNested: (n) => `${n} nested session(s)`,
@@ -2043,7 +2371,7 @@ ${GUEST_UI_LOOK_CSS}`;
       noTrend: "No requests yet",
       updatedAt: (t) => `updated ${t}`,
       loading: "Loading usage\u2026",
-      footer: (schema) => `Source: opencode.db (${schema}) \xB7 cost: DeepSeek = official peak/off-peak CNY; others = OpenCode-recorded USD`,
+      footer: (schema) => `Source: opencode.db (${schema}) \xB7 cost: listed models = DeepSeek official peak/off-peak CNY; others = OpenCode-recorded USD`,
       emptyTitle: "No usage yet",
       emptyBody: "This session has no assistant messages yet. Stats appear after the first reply.",
       notConnected: "No session",
@@ -2070,6 +2398,11 @@ ${GUEST_UI_LOOK_CSS}`;
   var scope = "total";
   var lastReport = null;
   var lastFetchAt = 0;
+  var config = null;
+  var rules = [];
+  var ruleHandles = [];
+  var savingRules = false;
+  var syncingHolidays = false;
   var el2 = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -2093,6 +2426,12 @@ ${GUEST_UI_LOOK_CSS}`;
   var costTipText = (m) => T().costTip(fmtCny(m.costCnyPeak), fmtCny(m.costCnyOff), m.hasDeepseek);
   var fmtPct = (r) => r == null ? "\u2014" : `${(r * 100).toFixed(1)}%`;
   var fmtTime = (ts) => ts ? new Date(ts).toLocaleTimeString(lang === "zh" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit" }) : "\u2014";
+  var fmtDateTime = (ts) => ts ? new Date(ts).toLocaleString(lang === "zh" ? "zh-CN" : "en-US", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }) : "\u2014";
   var titleEl;
   var updatedEl;
   var refreshHandle = null;
@@ -2114,6 +2453,15 @@ ${GUEST_UI_LOOK_CSS}`;
   var kRequests;
   var kCost;
   var modelsEl;
+  var settingsEl;
+  var billingListEl;
+  var billingAddSlot;
+  var billingNoteEl;
+  var holidayLineEl;
+  var holidaySyncSlot;
+  var holidayNoteEl;
+  var billingAddHandle = null;
+  var holidaySyncHandle = null;
   var childrenDetails;
   var childrenSummary;
   var childListEl;
@@ -2156,6 +2504,27 @@ ${GUEST_UI_LOOK_CSS}`;
     kHit.card.title = t.hitTip;
     const modelTitle = el2("div", "section", t.byModel);
     modelsEl = el2("div", "models");
+    settingsEl = el2("div", "settings");
+    settingsEl.hidden = true;
+    const billingTitle = el2("div", "section", t.billingTitle);
+    billingTitle.title = t.billingTip;
+    billingListEl = el2("div", "rules");
+    billingAddSlot = el2("div", "rule-add");
+    billingNoteEl = el2("div", "rule-note", t.billingNote);
+    const holidayTitle = el2("div", "section", t.holidayTitle);
+    holidayLineEl = el2("div", "holiday-line", "");
+    holidaySyncSlot = el2("div", "holiday-sync");
+    holidayNoteEl = el2("div", "rule-note", t.holidayNote);
+    settingsEl.append(
+      billingTitle,
+      billingListEl,
+      billingAddSlot,
+      billingNoteEl,
+      holidayTitle,
+      holidayLineEl,
+      holidaySyncSlot,
+      holidayNoteEl
+    );
     childrenDetails = document.createElement("details");
     childrenDetails.className = "children";
     childrenSummary = el2("summary", "", t.children(0));
@@ -2167,7 +2536,7 @@ ${GUEST_UI_LOOK_CSS}`;
     footEl = el2("div", "foot", "");
     bodyEl.append(cards, modelTitle, modelsEl, childrenDetails, trendTitle, trendEl, footEl);
     emptySlot = el2("div", "empty-slot");
-    wrap.append(head, subEl, tabsSlot, bannerSlot, bodyEl, emptySlot);
+    wrap.append(head, subEl, tabsSlot, bannerSlot, bodyEl, settingsEl, emptySlot);
     root.append(wrap);
     refreshHandle = mountButton(refreshSlot, {
       label: t.refresh,
@@ -2185,6 +2554,21 @@ ${GUEST_UI_LOOK_CSS}`;
         scope = id === "main" ? "main" : "total";
         renderBody();
       }
+    });
+    billingAddHandle = mountButton(billingAddSlot, {
+      label: `\uFF0B ${t.billingAdd}`,
+      size: "xs",
+      variant: "outline",
+      onClick: () => {
+        rules = [...rules, { provider: "", model: "" }];
+        renderBilling();
+      }
+    });
+    holidaySyncHandle = mountButton(holidaySyncSlot, {
+      label: t.holidaySync,
+      size: "xs",
+      variant: "outline",
+      onClick: () => void syncHolidayData()
     });
   }
   function setCell(cell, value, sub = "", tooltip) {
@@ -2246,7 +2630,8 @@ ${GUEST_UI_LOOK_CSS}`;
       for (const m of agg.byModel) {
         const row = el2("div", "model");
         const left = el2("div");
-        left.append(el2("div", "m-name", m.model), el2("div", "m-sub", `${m.provider || "?"} \xB7 ${fmtInt(m.requests)} \xD7`));
+        const tag = m.billing === "official" ? t.billingTagOfficial : t.billingTagRecorded;
+        left.append(el2("div", "m-name", m.model), el2("div", "m-sub", `${m.provider || "?"} \xB7 ${fmtInt(m.requests)} \xD7 \xB7 ${tag}`));
         const right = el2("div", "m-right");
         const costEl = el2("div", "m-cost", modelMoneyText(m));
         if (m.official) costEl.title = t.costPeakOff(fmtCny(m.official.peakCny), fmtCny(m.official.offCny));
@@ -2379,6 +2764,7 @@ ${GUEST_UI_LOOK_CSS}`;
         hideEmpty();
         renderBody();
         updatedEl.textContent = T().updatedAt(fmtTime(lastFetchAt));
+        void ensureConfig();
       } else if (result.empty) {
         lastReport = null;
         clearBanner();
@@ -2394,10 +2780,187 @@ ${GUEST_UI_LOOK_CSS}`;
       refreshHandle?.update({ loading: false });
     }
   }
+  var rulesSignature = (list) => list.map((r) => `${r.provider}/${r.model}`).join("|");
+  var providerLabel = (provider) => provider || T().billingUnknownProvider;
+  function updateSettingsVisibility() {
+    if (!built) return;
+    settingsEl.hidden = config == null;
+  }
+  function applyConfigPayload(next) {
+    const dirty = config != null && rulesSignature(rules) !== rulesSignature(config.config.billingModels);
+    config = next;
+    if (!dirty) rules = next.config.billingModels.map((r) => ({ ...r }));
+    renderBilling();
+    renderHolidays();
+    updateSettingsVisibility();
+  }
+  async function loadConfig() {
+    if (!built) return;
+    try {
+      if (MOCK) {
+        applyConfigPayload(mockConfig());
+        return;
+      }
+      const res = await host.serviceRequest({ method: "GET", path: "/config" });
+      if (res.status !== 200) throw new Error(`http-${res.status}`);
+      applyConfigPayload(JSON.parse(res.body));
+    } catch {
+      config = null;
+      updateSettingsVisibility();
+    }
+  }
+  var lastConfigAt = 0;
+  async function ensureConfig() {
+    if (Date.now() - lastConfigAt < 6e4) return;
+    lastConfigAt = Date.now();
+    await loadConfig();
+  }
+  function disposeRuleHandles() {
+    for (const h of ruleHandles) {
+      h.provider.dispose();
+      h.model.dispose();
+      h.remove.dispose();
+    }
+    ruleHandles = [];
+  }
+  function renderBilling() {
+    if (!built) return;
+    const t = T();
+    disposeRuleHandles();
+    billingListEl.textContent = "";
+    if (!config) return;
+    const catalog = config.catalog ?? [];
+    if (!rules.length) {
+      billingListEl.append(el2("div", "muted", t.billingEmpty));
+      return;
+    }
+    const providers = [.../* @__PURE__ */ new Set([...catalog.map((c) => c.provider), ...rules.map((r) => r.provider)])].sort(
+      (a, b) => providerLabel(a).localeCompare(providerLabel(b))
+    );
+    const rerender = () => {
+      setTimeout(() => renderBilling(), 0);
+    };
+    rules.forEach((rule, index) => {
+      const row = el2("div", "rule");
+      const providerSlot = el2("div", "rule-field");
+      const modelSlot = el2("div", "rule-field");
+      const delSlot = el2("div", "rule-del");
+      const providerOptions = providers.map((p) => ({
+        id: p,
+        label: providerLabel(p),
+        hint: String(catalog.filter((c) => c.provider === p).length)
+      }));
+      const modelOptions = catalog.filter((c) => c.provider === rule.provider).map((c) => ({
+        id: c.model,
+        label: c.model,
+        hint: c.officialPriced ? `${fmtInt(c.requests)} \xD7` : `${fmtInt(c.requests)} \xD7 \xB7 ${t.billingUnpriceable}`
+      }));
+      if (rule.model && !modelOptions.some((o) => o.id === rule.model)) {
+        modelOptions.unshift({ id: rule.model, label: rule.model });
+      }
+      const providerSel = mountSelect(providerSlot, {
+        value: rule.provider,
+        options: providerOptions,
+        searchable: true,
+        placeholder: t.billingPickProvider,
+        searchPlaceholder: t.billingPickProvider,
+        onChange: (id) => {
+          rules[index] = { provider: id ?? "", model: "" };
+          rerender();
+          void saveRules();
+        }
+      });
+      const modelSel = mountSelect(modelSlot, {
+        value: rule.model || null,
+        options: modelOptions,
+        searchable: true,
+        placeholder: t.billingPickModel,
+        searchPlaceholder: t.billingPickModel,
+        onChange: (id) => {
+          rules[index] = { provider: rules[index]?.provider ?? "", model: id ?? "" };
+          rerender();
+          void saveRules();
+        }
+      });
+      const removeHandle = mountButton(delSlot, {
+        label: "\u2715",
+        size: "xs",
+        variant: "ghost",
+        onClick: () => {
+          rules = rules.filter((_, i) => i !== index);
+          rerender();
+          void saveRules();
+        }
+      });
+      delSlot.title = t.billingRemove;
+      row.append(providerSlot, modelSlot, delSlot);
+      billingListEl.append(row);
+      ruleHandles.push({ provider: providerSel, model: modelSel, remove: removeHandle });
+    });
+  }
+  async function saveRules() {
+    if (!built || savingRules) return;
+    savingRules = true;
+    const list = rules.filter((r) => r.model.trim() !== "");
+    try {
+      if (MOCK) {
+        if (config) applyConfigPayload({ ...config, config: { ...config.config, seeded: true, billingModels: list } });
+        return;
+      }
+      const res = await host.serviceRequest({
+        method: "PUT",
+        path: "/config",
+        body: JSON.stringify({ billingModels: list })
+      });
+      if (res.status !== 200) throw new Error(`http-${res.status}`);
+      applyConfigPayload(JSON.parse(res.body));
+      void refresh();
+    } catch (err) {
+      setBanner("error", T().billingSaveFailed, err instanceof Error ? err.message : String(err), false);
+    } finally {
+      savingRules = false;
+    }
+  }
+  function renderHolidays() {
+    if (!built) return;
+    const t = T();
+    const status = config?.holidays;
+    holidayLineEl.hidden = !status;
+    holidaySyncSlot.hidden = !status;
+    holidayNoteEl.hidden = !status;
+    if (!config || !status) return;
+    const parts = Object.keys(status.counts).sort().map((year) => `${year}\uFF08${status.counts[year]} \u5929\uFF09`);
+    const synced = status.updatedAt ? t.holidaySynced(fmtDateTime(status.updatedAt)) : t.holidayNever;
+    const extra = status.extra > 0 ? ` \xB7 ${t.holidayExtra(status.extra)}` : "";
+    holidayLineEl.textContent = `${parts.length ? parts.join("\u3001") : t.holidayNone} \xB7 ${synced}${extra}`;
+    holidayLineEl.title = config.paths.holidayCache;
+  }
+  async function syncHolidayData() {
+    if (!built || syncingHolidays) return;
+    syncingHolidays = true;
+    holidaySyncHandle?.update({ loading: true, label: T().holidaySyncing });
+    try {
+      if (MOCK) return;
+      const res = await host.serviceRequest({ method: "POST", path: "/holidays/sync" });
+      if (res.status !== 200) throw new Error(`http-${res.status}`);
+      const payload = JSON.parse(res.body);
+      if (config && payload.holidays) config = { ...config, holidays: payload.holidays };
+      renderHolidays();
+      const synced = payload.synced ?? [];
+      if (synced.length) setBanner("info", T().holidaySyncOk(synced.join("\u3001")), "", false);
+      else setBanner("warning", T().holidaySyncFail, "", false);
+    } catch (err) {
+      setBanner("warning", T().holidaySyncFail, err instanceof Error ? err.message : String(err), false);
+    } finally {
+      syncingHolidays = false;
+      holidaySyncHandle?.update({ loading: false, label: T().holidaySync });
+    }
+  }
   function boot() {
     if (booted) return;
     booted = true;
     void refresh();
+    void loadConfig();
     setInterval(() => {
       if (!document.hidden) void refresh();
     }, 15e3);
@@ -2411,6 +2974,7 @@ ${GUEST_UI_LOOK_CSS}`;
     lastReport = null;
     if (!built) return;
     renderBodyPlaceholder();
+    updateSettingsVisibility();
     void refresh();
   }
   function renderBodyPlaceholder() {
@@ -2429,6 +2993,7 @@ ${GUEST_UI_LOOK_CSS}`;
     lastReport = mockReport(sessionId);
     hideEmpty();
     renderBody();
+    applyConfigPayload(mockConfig());
     updatedEl.textContent = T().updatedAt(fmtTime(Date.now()));
   } else {
     host.onReady((ctx) => {
@@ -2484,6 +3049,7 @@ ${GUEST_UI_LOOK_CSS}`;
       requests: 71,
       tokens: tok(47e4, 24e3, 18e4, 56e5, 0),
       cost: 0.2,
+      billing: "official",
       currency: "CNY",
       amount: 0.4193,
       official: { cny: 0.4193, peakCny: 0.1564, offCny: 0.2629 }
@@ -2494,6 +3060,7 @@ ${GUEST_UI_LOOK_CSS}`;
       requests: 6,
       tokens: tok(37271, 3357, 14259, 209920, 0),
       cost: 0.02649,
+      billing: "recorded",
       currency: "USD",
       amount: 0.02649,
       official: null
@@ -2567,6 +3134,34 @@ ${GUEST_UI_LOOK_CSS}`;
           ot ? money(0, 0, 0, 298e-5, 298e-5) : money(34e-4, 11e-4, 23e-4, 0, 34e-4)
         )
       ]
+    };
+  }
+  function mockConfig() {
+    const ds = params.get("case") !== "other";
+    const ot = params.get("case") !== "pure";
+    const catalog = [
+      { provider: "opencode", model: "deepseek-v4.1-flash-free", requests: 36, billing: "recorded", officialPriced: false },
+      { provider: "deepseek", model: "deepseek-flash", requests: 8, billing: ds ? "official" : "recorded", officialPriced: true },
+      { provider: "deepseek", model: "deepseek-pro", requests: 2, billing: ds ? "official" : "recorded", officialPriced: true }
+    ];
+    if (ot) catalog.push({ provider: "xai", model: "grok-4.7", requests: 6, billing: "recorded", officialPriced: false });
+    return {
+      ok: true,
+      config: {
+        version: 1,
+        seeded: true,
+        billingModels: ds ? [
+          { provider: "deepseek", model: "deepseek-flash" },
+          { provider: "deepseek", model: "deepseek-pro" }
+        ] : [],
+        holidays: []
+      },
+      catalog,
+      holidays: { counts: { "2026": 19 }, builtinYears: [2026], cacheYears: [], extra: 0, updatedAt: null },
+      paths: {
+        config: "~/.config/openchamber/session-usage.json",
+        holidayCache: "~/.config/openchamber/session-usage-holidays.json"
+      }
     };
   }
 })();

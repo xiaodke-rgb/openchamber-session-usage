@@ -57,6 +57,16 @@ body {
   text-overflow: ellipsis;
 }
 
+/* 次要币种（混合会话的「+ $y」）：单独一行小字，免得主值在窄列里被截断 */
+.cell .s {
+  font-size: 10.5px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .cell.accent {
   border-color: color-mix(in srgb, currentColor 25%, transparent);
 }

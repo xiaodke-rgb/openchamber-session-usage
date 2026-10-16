@@ -119,10 +119,12 @@ const fmtTokens = (n: number): string => {
 const fmtUsd = (n: number): string => `$${(n >= 1 ? n.toFixed(2) : n >= 0.01 ? n.toFixed(3) : n.toFixed(4))}`;
 const fmtCny = (n: number): string => `¥${n.toFixed(4)}`;
 
-/** 费用文案：纯 DeepSeek → ¥x；混合 → ¥x + $y；无 DeepSeek → $y（与面板同一规则）。 */
-const moneyText = (m: Money): string => {
-  if (m.hasDeepseek) return m.hasOther ? `${fmtCny(m.costCny)} + ${fmtUsd(m.costUsdOther)}` : fmtCny(m.costCny);
-  return fmtUsd(m.cost);
+/** 费用文案：主值 + 次要币种。混合会话拆成「¥x」和「+ $y」两行；只有一种币种、或美元部分为 0 时次要行为空。 */
+const moneyParts = (m: Money): { value: string; sub: string } => {
+  if (!m.hasDeepseek) return { value: fmtUsd(m.cost), sub: '' };
+  const value = fmtCny(m.costCny);
+  if (!m.hasOther || m.costUsdOther <= 0) return { value, sub: '' };
+  return { value, sub: `+ ${fmtUsd(m.costUsdOther)}` };
 };
 const costTipText = (m: Money): string => T().costTip(fmtCny(m.costCnyPeak), fmtCny(m.costCnyOff), m.hasDeepseek);
 const fmtPct = (r: number | null): string => (r == null ? '—' : `${(r * 100).toFixed(1)}%`);
@@ -133,7 +135,7 @@ const fmtTime = (ts: number): string =>
 // 骨架
 // ---------------------------------------------------------------------------
 
-type Cell = { cell: HTMLElement; value: HTMLElement };
+type Cell = { cell: HTMLElement; value: HTMLElement; sub?: HTMLElement };
 let cTokens!: Cell;
 let cHit!: Cell;
 let cCost!: Cell;
@@ -155,6 +157,20 @@ function makeCell(grid: HTMLElement, label: string, tip?: string, accent = false
   return { cell, value };
 }
 
+/** 给单元格加一行次要币种（只有费用格用），避免窄列里主值被省略号截断。 */
+function addSubLine(cell: Cell): void {
+  const sub = el('div', 's', '');
+  sub.hidden = true;
+  cell.cell.append(sub);
+  cell.sub = sub;
+}
+
+function setSubLine(cell: Cell, text: string): void {
+  if (!cell.sub) return;
+  cell.sub.textContent = text;
+  cell.sub.hidden = !text;
+}
+
 function buildDom(): void {
   if (built) return;
   built = true;
@@ -164,6 +180,7 @@ function buildDom(): void {
   cTokens = makeCell(grid, t.kTokens);
   cHit = makeCell(grid, t.kHit, t.hitTip, true);
   cCost = makeCell(grid, t.kCost);
+  addSubLine(cCost);
   cReq = makeCell(grid, t.kRequests);
   const foot = el('div', 'foot');
   footTitle = el('span', 's-title', '');
@@ -201,8 +218,10 @@ function render(report: Report | null, state: 'no-session' | 'loading' | 'empty'
     cTokens.value.textContent = fmtTokens(a.tokens.total);
     cTokens.value.title = fmtInt(a.tokens.total);
     cHit.value.textContent = fmtPct(a.hitRate);
-    cCost.value.textContent = moneyText(a);
+    const cost = moneyParts(a);
+    cCost.value.textContent = cost.value;
     cCost.cell.title = costTipText(a);
+    setSubLine(cCost, cost.sub);
     cReq.value.textContent = fmtInt(a.requests);
     footTitle.textContent = report.session.title || report.session.id;
     const scopeText = report.session.descendantCount > 0 ? t.withSub : '';
@@ -213,6 +232,7 @@ function render(report: Report | null, state: 'no-session' | 'loading' | 'empty'
     cHit.value.textContent = '—';
     cCost.value.textContent = '—';
     cCost.cell.title = '';
+    setSubLine(cCost, '');
     cReq.value.textContent = '—';
     if (state === 'no-session') {
       footTitle.textContent = t.noSession;

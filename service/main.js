@@ -6,6 +6,38 @@ var import_node_fs = require("node:fs");
 var import_node_os = require("node:os");
 var import_node_path = require("node:path");
 var import_node_sqlite = require("node:sqlite");
+
+// service/holidays.json
+var holidays_default = {
+  source: "https://github.com/NateScarlet/holiday-cn (MIT)",
+  updatedAt: "2026-10-16T16:38:02.733Z",
+  note: "\u4EC5\u6536\u5F55\u300C\u843D\u5728\u5DE5\u4F5C\u65E5\u7684\u6CD5\u5B9A\u653E\u5047\u65E5\u300D\uFF1B\u5468\u672B\u4E0E\u8C03\u4F11\u8865\u73ED\u65E5\u7531\u5468\u672B\u89C4\u5219\u8986\u76D6\u3002",
+  years: {
+    "2026": [
+      "2026-01-01",
+      "2026-01-02",
+      "2026-02-16",
+      "2026-02-17",
+      "2026-02-18",
+      "2026-02-19",
+      "2026-02-20",
+      "2026-02-23",
+      "2026-04-06",
+      "2026-05-01",
+      "2026-05-04",
+      "2026-05-05",
+      "2026-06-19",
+      "2026-09-25",
+      "2026-10-01",
+      "2026-10-02",
+      "2026-10-05",
+      "2026-10-06",
+      "2026-10-07"
+    ]
+  }
+};
+
+// service/main.ts
 var PORT = Number(process.env.OPENCHAMBER_SERVICE_PORT || 0);
 var TOKEN = process.env.OPENCHAMBER_SERVICE_TOKEN || "";
 var TTL_MS = 15e3;
@@ -43,17 +75,226 @@ var PRICING = {
   pro: { hitOff: 0.15, hitPeak: 0.3, missOff: 4.5, missPeak: 9, outOff: 13.5, outPeak: 27 }
 };
 var PEAK_WINDOW_UTC = "\u5468\u4E00\u81F3\u5468\u4E94 01:00\u201304:00\u300106:00\u201310:00 UTC";
-var PEAK_WINDOW_LOCAL = "\u5317\u4EAC\u65F6\u95F4 09:00\u201312:00\u300114:00\u201318:00";
+var PEAK_WINDOW_LOCAL = "\u5317\u4EAC\u65F6\u95F4 09:00\u201312:00\u300114:00\u201318:00\uFF08\u5468\u672B\u4E0E\u4E2D\u56FD\u6CD5\u5B9A\u8282\u5047\u65E5\u5168\u5929\u4E3A\u8C37\u4EF7\uFF09";
 function tierOf(model) {
   const m = model.toLowerCase();
   if (!m.startsWith("deepseek")) return null;
   return m.includes("pro") ? "pro" : "flash";
 }
-function isPeak(date) {
+var isFreeModel = (model) => model.toLowerCase().includes("free");
+var legacyOfficial = (model) => {
+  const m = model.trim().toLowerCase();
+  return m.startsWith("deepseek") && !m.includes("free");
+};
+var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+var CONFIG_DIR = (0, import_node_path.join)(process.env.XDG_CONFIG_HOME || (0, import_node_path.join)((0, import_node_os.homedir)(), ".config"), "openchamber");
+var CONFIG_FILE = process.env.SESSION_USAGE_CONFIG || (0, import_node_path.join)(CONFIG_DIR, "session-usage.json");
+var HOLIDAY_CACHE_FILE = (0, import_node_path.join)(CONFIG_DIR, "session-usage-holidays.json");
+var emptyConfig = () => ({ version: 1, seeded: false, billingModels: [], holidays: [] });
+var pairKey = (provider, model) => `${provider.trim().toLowerCase()}/${model.trim().toLowerCase()}`;
+function normalizeRule(value) {
+  if (!value || typeof value !== "object") return null;
+  const raw = value;
+  const provider = typeof raw.provider === "string" ? raw.provider.trim() : "";
+  const model = typeof raw.model === "string" ? raw.model.trim() : "";
+  if (!model || model.length > 200 || provider.length > 200) return null;
+  return { provider, model };
+}
+function readConfigFile() {
+  let raw;
+  try {
+    raw = JSON.parse((0, import_node_fs.readFileSync)(CONFIG_FILE, "utf8"));
+  } catch {
+    return emptyConfig();
+  }
+  const rules = Array.isArray(raw.billingModels) ? raw.billingModels : [];
+  const holidays = Array.isArray(raw.holidays) ? raw.holidays.filter((d) => typeof d === "string" && DATE_RE.test(d)) : [];
+  return {
+    version: 1,
+    seeded: raw.seeded === true,
+    billingModels: rules.map(normalizeRule).filter((r) => r !== null),
+    holidays
+  };
+}
+function configSignature() {
+  try {
+    const s = (0, import_node_fs.statSync)(CONFIG_FILE);
+    return `${s.mtimeMs}:${s.size}`;
+  } catch {
+    return "missing";
+  }
+}
+var cfgMemo = null;
+var billingPairs = /* @__PURE__ */ new Set();
+var billingModelOnly = /* @__PURE__ */ new Set();
+function applyConfig(config) {
+  const pairs = /* @__PURE__ */ new Set();
+  const models = /* @__PURE__ */ new Set();
+  for (const rule of config.billingModels) {
+    if (isFreeModel(rule.model) || !tierOf(rule.model)) continue;
+    models.add(rule.model.trim().toLowerCase());
+    pairs.add(pairKey(rule.provider, rule.model));
+  }
+  billingPairs = pairs;
+  billingModelOnly = models;
+  return config;
+}
+function getConfig() {
+  const signature = configSignature();
+  if (cfgMemo && cfgMemo.signature === signature) return cfgMemo.config;
+  const config = applyConfig(readConfigFile());
+  cfgMemo = { config, signature };
+  return config;
+}
+function setConfig(config) {
+  (0, import_node_fs.mkdirSync)(CONFIG_DIR, { recursive: true });
+  const tmp = `${CONFIG_FILE}.tmp`;
+  (0, import_node_fs.writeFileSync)(tmp, `${JSON.stringify(config, null, 2)}
+`, "utf8");
+  (0, import_node_fs.renameSync)(tmp, CONFIG_FILE);
+  const applied = applyConfig(config);
+  cfgMemo = { config: applied, signature: configSignature() };
+}
+function seedBilling(data) {
+  if (getConfig().seeded) return;
+  const pairs = /* @__PURE__ */ new Map();
+  for (const row of data.rows) {
+    if (!legacyOfficial(row.model)) continue;
+    pairs.set(pairKey(row.provider, row.model), { provider: row.provider, model: row.model });
+  }
+  const seeded = { ...getConfig(), seeded: true, billingModels: [...pairs.values()] };
+  try {
+    setConfig(seeded);
+  } catch {
+    cfgMemo = { config: applyConfig(seeded), signature: configSignature() };
+  }
+}
+function billingModeOf(provider, model) {
+  if (isFreeModel(model) || !tierOf(model)) return "recorded";
+  const p = provider.trim().toLowerCase();
+  const m = model.trim().toLowerCase();
+  if (p) return billingPairs.has(`${p}/${m}`) ? "official" : "recorded";
+  return billingModelOnly.has(m) ? "official" : "recorded";
+}
+var BUILTIN = holidays_default;
+function holidayCacheSignature() {
+  try {
+    const s = (0, import_node_fs.statSync)(HOLIDAY_CACHE_FILE);
+    return `${s.mtimeMs}:${s.size}`;
+  } catch {
+    return "missing";
+  }
+}
+function readHolidayCache() {
+  try {
+    return JSON.parse((0, import_node_fs.readFileSync)(HOLIDAY_CACHE_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+function yearKeys(file) {
+  const years = file?.years;
+  if (!years || typeof years !== "object") return [];
+  return Object.keys(years).map(Number).filter((y) => Number.isFinite(y)).sort((a, b) => a - b);
+}
+var holidayMemo = null;
+function getHolidays() {
+  const signature = `${configSignature()}|${holidayCacheSignature()}`;
+  if (holidayMemo && holidayMemo.signature === signature) return holidayMemo;
+  const set = /* @__PURE__ */ new Set();
+  const add = (list) => {
+    if (!Array.isArray(list)) return;
+    for (const date of list) {
+      if (typeof date !== "string" || !DATE_RE.test(date)) continue;
+      set.add(date);
+    }
+  };
+  for (const year of yearKeys(BUILTIN)) add(BUILTIN.years?.[String(year)]);
+  const cache = readHolidayCache();
+  for (const year of yearKeys(cache)) add(cache.years?.[String(year)]);
+  const extra = getConfig().holidays;
+  add(extra);
+  const counts = {};
+  for (const date of set) {
+    const year = date.slice(0, 4);
+    counts[year] = (counts[year] ?? 0) + 1;
+  }
+  const cacheAt = cache.updatedAt ? new Date(cache.updatedAt).getTime() : 0;
+  holidayMemo = {
+    set,
+    counts,
+    builtinYears: yearKeys(BUILTIN),
+    cacheYears: yearKeys(cache),
+    extra: extra.length,
+    updatedAt: Number.isFinite(cacheAt) && cacheAt > 0 ? cacheAt : null,
+    signature
+  };
+  return holidayMemo;
+}
+var beijingDate = (date) => new Date(date.getTime() + 8 * 36e5).toISOString().slice(0, 10);
+function isPeak(date, holidays) {
   const day = date.getUTCDay();
   if (day === 0 || day === 6) return false;
+  if (holidays.has(beijingDate(date))) return false;
   const h = date.getUTCHours();
   return h >= 1 && h < 4 || h >= 6 && h < 10;
+}
+var HOLIDAY_SOURCES = [
+  "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master",
+  "https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master"
+];
+var HOLIDAY_SYNC_TIMEOUT_MS = 1e4;
+async function fetchHolidayYear(year) {
+  const weekend = (date) => {
+    const day = (/* @__PURE__ */ new Date(`${date}T00:00:00Z`)).getUTCDay();
+    return day === 0 || day === 6;
+  };
+  for (const base of HOLIDAY_SOURCES) {
+    try {
+      const res = await fetch(`${base}/${year}.json`, {
+        headers: { accept: "application/json", "user-agent": "openchamber-session-usage" },
+        signal: AbortSignal.timeout(HOLIDAY_SYNC_TIMEOUT_MS)
+      });
+      if (!res.ok) continue;
+      const json = await res.json();
+      const dates = (Array.isArray(json.days) ? json.days : []).filter((d) => d && d.isOffDay === true && typeof d.date === "string" && DATE_RE.test(d.date) && !weekend(d.date)).map((d) => d.date).sort();
+      if (dates.length) return dates;
+    } catch {
+    }
+  }
+  return null;
+}
+async function syncHolidays() {
+  const info = getHolidays();
+  const thisYear = (/* @__PURE__ */ new Date()).getUTCFullYear();
+  const years = [.../* @__PURE__ */ new Set([...info.builtinYears, ...info.cacheYears, thisYear, thisYear + 1])].sort((a, b) => a - b);
+  const cache = readHolidayCache();
+  const merged = {};
+  for (const year of yearKeys(cache)) merged[String(year)] = [...cache.years?.[String(year)] ?? []];
+  const synced = [];
+  const failed = [];
+  for (const year of years) {
+    const dates = await fetchHolidayYear(year);
+    if (dates) {
+      merged[String(year)] = dates;
+      synced.push(year);
+    } else if (!merged[String(year)]?.length) {
+      failed.push(year);
+    }
+  }
+  const payload = {
+    source: "https://github.com/NateScarlet/holiday-cn (MIT)",
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    note: "\u4EC5\u6536\u5F55\u300C\u843D\u5728\u5DE5\u4F5C\u65E5\u7684\u6CD5\u5B9A\u653E\u5047\u65E5\u300D\uFF1B\u5468\u672B\u4E0E\u8C03\u4F11\u8865\u73ED\u65E5\u7531\u5468\u672B\u89C4\u5219\u8986\u76D6\u3002",
+    years: merged
+  };
+  (0, import_node_fs.mkdirSync)(CONFIG_DIR, { recursive: true });
+  const tmp = `${HOLIDAY_CACHE_FILE}.tmp`;
+  (0, import_node_fs.writeFileSync)(tmp, `${JSON.stringify(payload, null, 2)}
+`, "utf8");
+  (0, import_node_fs.renameSync)(tmp, HOLIDAY_CACHE_FILE);
+  holidayMemo = null;
+  return { synced, failed };
 }
 function messageOfficialCost(tokens, tier, peak) {
   if (!tier) return 0;
@@ -234,6 +475,7 @@ function getData() {
   }
   try {
     const data = loadFull(dbPath);
+    seedBilling(data);
     cached = { data, at: now, usedAt: now, dbPath };
     return data;
   } catch (err) {
@@ -249,7 +491,7 @@ var idleTimer = setInterval(() => {
   if (cached && Date.now() - cached.usedAt > IDLE_RELEASE_MS) cached = null;
 }, 6e4);
 idleTimer.unref();
-function foldRows(rows) {
+function foldRows(rows, holidays) {
   const fold = {
     requests: 0,
     tokens: emptyTokens(),
@@ -263,8 +505,9 @@ function foldRows(rows) {
     models: /* @__PURE__ */ new Map()
   };
   for (const row of rows) {
-    const tier = tierOf(row.model);
-    const peak = tier !== null && row.ts > 0 ? isPeak(new Date(row.ts)) : false;
+    const billing = billingModeOf(row.provider, row.model);
+    const tier = billing === "official" ? tierOf(row.model) : null;
+    const peak = tier !== null && row.ts > 0 ? isPeak(new Date(row.ts), holidays) : false;
     const cny = messageOfficialCost(row.tokens, tier, peak);
     fold.requests += 1;
     addTokens(fold.tokens, row.tokens);
@@ -288,6 +531,7 @@ function foldRows(rows) {
         tokens: emptyTokens(),
         cost: 0,
         tier,
+        billing,
         cny: 0,
         peakCny: 0,
         offCny: 0
@@ -330,6 +574,8 @@ function modelsOf(fold) {
     tokens: { ...m.tokens, total: tokenTotal(m.tokens) },
     cost: m.cost,
     // 原字段：OpenCode 记账 USD
+    billing: m.billing,
+    // official=官方峰谷价；recorded=OpenCode 记账
     currency: m.tier ? "CNY" : "USD",
     // 该行展示币种
     amount: m.tier ? m.cny : m.cost,
@@ -384,14 +630,15 @@ function buildSessionReport(data, sessionId) {
       cur = m.parentId;
     }
   }
-  const foldMain = foldRows(mainRows);
-  const foldTotal = foldRows(treeRows);
+  const holidays = getHolidays().set;
+  const foldMain = foldRows(mainRows, holidays);
+  const foldTotal = foldRows(treeRows, holidays);
   let lastMessageAt = 0;
   for (const r of treeRows) if (r.ts > lastMessageAt) lastMessageAt = r.ts;
   const children = directChildren.map((id) => {
     const cm = data.meta.get(id);
     const rows = childBuckets.get(id) ?? [];
-    const fold = foldRows(rows);
+    const fold = foldRows(rows, holidays);
     let lastChildTs = 0;
     for (const r of rows) if (r.ts > lastChildTs) lastChildTs = r.ts;
     return {
@@ -422,7 +669,8 @@ function buildSessionReport(data, sessionId) {
       peakWindowUtc: PEAK_WINDOW_UTC,
       peakWindowLocal: PEAK_WINDOW_LOCAL,
       cnyPerMillion: PRICING,
-      note: "DeepSeek \u6D88\u606F\u6309\u5B98\u65B9\u5CF0\u8C37\u4EF7\u91CD\u7B97\u4EBA\u6C11\u5E01\uFF08\u7F13\u5B58\u5199\u4E0D\u8BA1\u8D39\uFF09\uFF1B\u5176\u4ED6\u6A21\u578B\u4E3A OpenCode \u8BB0\u8D26 USD\uFF1B\u4E0D\u505A\u6C47\u7387\u6362\u7B97\u3002"
+      holidayYears: getHolidays().builtinYears,
+      note: "\u767D\u540D\u5355\u91CC\u7684\u6A21\u578B\u6309 DeepSeek \u5B98\u65B9\u5CF0\u8C37\u4EF7\u91CD\u7B97\u4EBA\u6C11\u5E01\uFF08\u5468\u672B\u4E0E\u4E2D\u56FD\u6CD5\u5B9A\u8282\u5047\u65E5\u6309\u8C37\u4EF7\uFF0C\u7F13\u5B58\u5199\u4E0D\u8BA1\u8D39\uFF09\uFF1B\u5176\u4F59\u6A21\u578B\u4E3A OpenCode \u8BB0\u8D26 USD\uFF1B\u4E0D\u505A\u6C47\u7387\u6362\u7B97\u3002"
     },
     session: {
       id: sessionId,
@@ -460,7 +708,98 @@ function sendJson(res, status, payload) {
   });
   res.end(body);
 }
-var server = (0, import_node_http.createServer)((req, res) => {
+function catalogOf(data) {
+  const map = /* @__PURE__ */ new Map();
+  for (const row of data.rows) {
+    const key = pairKey(row.provider, row.model);
+    const found = map.get(key);
+    if (found) {
+      found.requests += 1;
+      continue;
+    }
+    map.set(key, {
+      provider: row.provider,
+      model: row.model,
+      requests: 1,
+      billing: billingModeOf(row.provider, row.model),
+      officialPriced: !isFreeModel(row.model) && tierOf(row.model) !== null
+    });
+  }
+  return [...map.values()].sort(
+    (a, b) => b.requests - a.requests || a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model)
+  );
+}
+function configSnapshot() {
+  let catalog = [];
+  try {
+    catalog = catalogOf(getData());
+  } catch {
+    catalog = [];
+  }
+  const config = getConfig();
+  const holidays = getHolidays();
+  return {
+    ok: true,
+    config: {
+      version: 1,
+      seeded: config.seeded,
+      billingModels: config.billingModels,
+      holidays: config.holidays
+    },
+    catalog,
+    holidays: {
+      counts: holidays.counts,
+      builtinYears: holidays.builtinYears,
+      cacheYears: holidays.cacheYears,
+      extra: holidays.extra,
+      updatedAt: holidays.updatedAt
+    },
+    paths: { config: CONFIG_FILE, holidayCache: HOLIDAY_CACHE_FILE }
+  };
+}
+function sanitizeRules(value) {
+  const list = Array.isArray(value) ? value : [];
+  const seen = /* @__PURE__ */ new Set();
+  const rules = [];
+  for (const item of list) {
+    const rule = normalizeRule(item);
+    if (!rule) continue;
+    const key = pairKey(rule.provider, rule.model);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rules.push(rule);
+  }
+  return rules;
+}
+function readJsonBody(req, limit = 256 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new HttpError(413, "body-too-large", "\u8BF7\u6C42\u4F53\u8FC7\u5927"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      const text = Buffer.concat(chunks).toString("utf8").trim();
+      if (!text) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(text));
+      } catch {
+        reject(new HttpError(400, "bad-json", "\u8BF7\u6C42\u4F53\u4E0D\u662F\u5408\u6CD5 JSON"));
+      }
+    });
+    req.on("error", (err) => reject(err));
+  });
+}
+var server = (0, import_node_http.createServer)(async (req, res) => {
   try {
     if (TOKEN) {
       const auth = req.headers.authorization ?? "";
@@ -492,6 +831,37 @@ var server = (0, import_node_http.createServer)((req, res) => {
         return;
       }
       sendJson(res, 200, report);
+      return;
+    }
+    if (url.pathname === "/config") {
+      if (req.method === "GET") {
+        sendJson(res, 200, configSnapshot());
+        return;
+      }
+      if (req.method === "PUT") {
+        const parsed = await readJsonBody(req);
+        const patch = parsed && typeof parsed === "object" ? parsed : {};
+        const next = { ...getConfig(), seeded: true };
+        if ("billingModels" in patch) next.billingModels = sanitizeRules(patch.billingModels);
+        if ("holidays" in patch) {
+          const list = Array.isArray(patch.holidays) ? patch.holidays : [];
+          next.holidays = [...new Set(list.filter((d) => typeof d === "string" && DATE_RE.test(d)))].sort();
+        }
+        if (typeof patch.seeded === "boolean") next.seeded = patch.seeded;
+        setConfig(next);
+        sendJson(res, 200, configSnapshot());
+        return;
+      }
+      sendJson(res, 405, { ok: false, error: "method-not-allowed" });
+      return;
+    }
+    if (url.pathname === "/holidays/sync") {
+      if (req.method !== "POST") {
+        sendJson(res, 405, { ok: false, error: "method-not-allowed" });
+        return;
+      }
+      const result = await syncHolidays();
+      sendJson(res, 200, { ok: true, synced: result.synced, failed: result.failed, holidays: configSnapshot().holidays });
       return;
     }
     sendJson(res, 404, { ok: false, error: "not-found" });

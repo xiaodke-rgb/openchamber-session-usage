@@ -3,19 +3,24 @@
  *
  * 只读读取本机 opencode.db（OpenCode 2.x：session_v2 / session_message；1.x：session / message），
  * 按「当前会话 + 递归子代理子会话」聚合 token、缓存命中与费用：
- *   - DeepSeek 模型按官方峰谷价重算人民币（价目/时段逻辑与 deepseek-usage 扩展一致）
- *   - 其他模型沿用 OpenCode 记录的 USD cost
- *   不做汇率换算、不联网。
+ *   - 计费白名单（~/.config/openchamber/session-usage.json 里的 provider/model）按 DeepSeek
+ *     官方峰谷价重算人民币（价目/时段逻辑与 deepseek-usage 扩展一致，周末与法定节假日按谷价）
+ *   - 其余模型沿用 OpenCode 记录的 USD cost（免费模型即 0）
+ *   不做汇率换算；除用户主动触发的 /holidays/sync 外不联网。
  *
  * 路由：
- *   GET /health
- *   GET /session?sessionId=ses_xxx
+ *   GET  /health
+ *   GET  /session?sessionId=ses_xxx
+ *   GET  /config                       计费配置 + 模型清单 + 节假日状态
+ *   PUT  /config                       { billingModels?, holidays? }
+ *   POST /holidays/sync                联网同步中国法定节假日（用户主动触发）
  */
-import { createServer, type ServerResponse } from 'node:http';
-import { existsSync } from 'node:fs';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import BUILTIN_HOLIDAYS from './holidays.json';
 
 const PORT = Number(process.env.OPENCHAMBER_SERVICE_PORT || 0);
 const TOKEN = process.env.OPENCHAMBER_SERVICE_TOKEN || '';
@@ -91,9 +96,10 @@ const hitRate = (t: Tokens): number | null => {
 
 // ---------------------------------------------------------------------------
 // 费用口径
-// DeepSeek 消息按官方峰谷价重算人民币（价目表与峰谷算法原样取自
+// 白名单（~/.config/openchamber/session-usage.json 的 billingModels）里的 provider/model
+// 按 DeepSeek 官方峰谷价重算人民币（价目表与峰谷算法原样取自
 // /home/xiaodke/.config/openchamber/extensions/deepseek-usage/service/main.ts）；
-// 其余模型沿用 OpenCode 记录的 USD cost。不做汇率换算、不联网。
+// 不在白名单里的一律沿用 OpenCode 记录的 USD cost（免费模型即 0）。不做汇率换算。
 // ---------------------------------------------------------------------------
 
 type Tier = 'flash' | 'pro';
@@ -114,20 +120,309 @@ const PRICING: Record<Tier, TierPrice> = {
 };
 
 const PEAK_WINDOW_UTC = '周一至周五 01:00–04:00、06:00–10:00 UTC';
-const PEAK_WINDOW_LOCAL = '北京时间 09:00–12:00、14:00–18:00';
+const PEAK_WINDOW_LOCAL = '北京时间 09:00–12:00、14:00–18:00（周末与中国法定节假日全天为谷价）';
 
+/** 档位只看模型 id：以 deepseek 开头、含 pro 走 pro 档，否则 flash 档。 */
 function tierOf(model: string): Tier | null {
   const m = model.toLowerCase();
   if (!m.startsWith('deepseek')) return null;
   return m.includes('pro') ? 'pro' : 'flash';
 }
 
-/** 峰时：UTC 周一至周五 01:00–04:00、06:00–10:00；其余为谷时（半价）。不处理节假日。 */
-function isPeak(date: Date): boolean {
+/** 免费模型（id 含 free，如 opencode 家的 deepseek-v4.1-flash-free）永远不按官方价算。 */
+const isFreeModel = (model: string): boolean => model.toLowerCase().includes('free');
+
+/** 旧规则（deepseek* 且非 free）——只在首次运行时用来生成白名单默认值。 */
+const legacyOfficial = (model: string): boolean => {
+  const m = model.trim().toLowerCase();
+  return m.startsWith('deepseek') && !m.includes('free');
+};
+
+// ---- 计费白名单配置 --------------------------------------------------------
+
+type BillingModel = { provider: string; model: string };
+
+type Config = {
+  version: 1;
+  /** 首次运行按旧规则播过种没有；用户动过配置后不再自动播种 */
+  seeded: boolean;
+  /** 走 DeepSeek 官方峰谷计费的 provider/model */
+  billingModels: BillingModel[];
+  /** 手工追加的法定节假日日期（YYYY-MM-DD），叠加在内置清单之上 */
+  holidays: string[];
+};
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const CONFIG_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'openchamber');
+const CONFIG_FILE = process.env.SESSION_USAGE_CONFIG || join(CONFIG_DIR, 'session-usage.json');
+const HOLIDAY_CACHE_FILE = join(CONFIG_DIR, 'session-usage-holidays.json');
+
+const emptyConfig = (): Config => ({ version: 1, seeded: false, billingModels: [], holidays: [] });
+
+const pairKey = (provider: string, model: string): string =>
+  `${provider.trim().toLowerCase()}/${model.trim().toLowerCase()}`;
+
+function normalizeRule(value: unknown): BillingModel | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const provider = typeof raw.provider === 'string' ? raw.provider.trim() : '';
+  const model = typeof raw.model === 'string' ? raw.model.trim() : '';
+  if (!model || model.length > 200 || provider.length > 200) return null;
+  return { provider, model };
+}
+
+function readConfigFile(): Config {
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf8')) as Record<string, unknown>;
+  } catch {
+    return emptyConfig();
+  }
+  const rules = Array.isArray(raw.billingModels) ? raw.billingModels : [];
+  const holidays = Array.isArray(raw.holidays)
+    ? raw.holidays.filter((d): d is string => typeof d === 'string' && DATE_RE.test(d))
+    : [];
+  return {
+    version: 1,
+    seeded: raw.seeded === true,
+    billingModels: rules.map(normalizeRule).filter((r): r is BillingModel => r !== null),
+    holidays,
+  };
+}
+
+function configSignature(): string {
+  try {
+    const s = statSync(CONFIG_FILE);
+    return `${s.mtimeMs}:${s.size}`;
+  } catch {
+    return 'missing';
+  }
+}
+
+let cfgMemo: { config: Config; signature: string } | null = null;
+let billingPairs = new Set<string>();
+let billingModelOnly = new Set<string>();
+
+/** 刷新白名单索引（免费模型与认不出档位的模型不进官方计费）。 */
+function applyConfig(config: Config): Config {
+  const pairs = new Set<string>();
+  const models = new Set<string>();
+  for (const rule of config.billingModels) {
+    if (isFreeModel(rule.model) || !tierOf(rule.model)) continue;
+    models.add(rule.model.trim().toLowerCase());
+    pairs.add(pairKey(rule.provider, rule.model));
+  }
+  billingPairs = pairs;
+  billingModelOnly = models;
+  return config;
+}
+
+/** 读配置（按文件 mtime 复用），顺带刷新白名单索引。 */
+function getConfig(): Config {
+  const signature = configSignature();
+  if (cfgMemo && cfgMemo.signature === signature) return cfgMemo.config;
+  const config = applyConfig(readConfigFile());
+  cfgMemo = { config, signature };
+  return config;
+}
+
+/** 写配置（原子替换）；写盘失败会抛错，由路由转成 500。 */
+function setConfig(config: Config): void {
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  const tmp = `${CONFIG_FILE}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  renameSync(tmp, CONFIG_FILE);
+  const applied = applyConfig(config);
+  cfgMemo = { config: applied, signature: configSignature() };
+}
+
+/** 首次运行：把「按旧规则本来就走官方计费」的模型写进白名单（deepseek* 且非 free）。 */
+function seedBilling(data: UsageData): void {
+  if (getConfig().seeded) return;
+  const pairs = new Map<string, BillingModel>();
+  for (const row of data.rows) {
+    if (!legacyOfficial(row.model)) continue;
+    pairs.set(pairKey(row.provider, row.model), { provider: row.provider, model: row.model });
+  }
+  const seeded: Config = { ...getConfig(), seeded: true, billingModels: [...pairs.values()] };
+  try {
+    setConfig(seeded);
+  } catch {
+    // 写不进去（权限/只读）也不影响本次运行：内存里先按播种后的白名单算
+    cfgMemo = { config: applyConfig(seeded), signature: configSignature() };
+  }
+}
+
+type BillingMode = 'official' | 'recorded';
+
+/** 白名单命中、档位认得、且不是免费模型 → 官方计费；否则 OpenCode 记账。 */
+function billingModeOf(provider: string, model: string): BillingMode {
+  if (isFreeModel(model) || !tierOf(model)) return 'recorded';
+  const p = provider.trim().toLowerCase();
+  const m = model.trim().toLowerCase();
+  if (p) return billingPairs.has(`${p}/${m}`) ? 'official' : 'recorded';
+  return billingModelOnly.has(m) ? 'official' : 'recorded';
+}
+
+// ---- 法定节假日 -----------------------------------------------------------
+
+type HolidayFile = { updatedAt?: string | number; source?: string; note?: string; years?: Record<string, string[]> };
+
+type HolidayInfo = {
+  set: Set<string>;
+  counts: Record<string, number>;
+  builtinYears: number[];
+  cacheYears: number[];
+  extra: number;
+  updatedAt: number | null;
+  signature: string;
+};
+
+const BUILTIN = BUILTIN_HOLIDAYS as HolidayFile;
+
+function holidayCacheSignature(): string {
+  try {
+    const s = statSync(HOLIDAY_CACHE_FILE);
+    return `${s.mtimeMs}:${s.size}`;
+  } catch {
+    return 'missing';
+  }
+}
+
+function readHolidayCache(): HolidayFile {
+  try {
+    return JSON.parse(readFileSync(HOLIDAY_CACHE_FILE, 'utf8')) as HolidayFile;
+  } catch {
+    return {};
+  }
+}
+
+function yearKeys(file: HolidayFile | undefined): number[] {
+  const years = file?.years;
+  if (!years || typeof years !== 'object') return [];
+  return Object.keys(years)
+    .map(Number)
+    .filter((y) => Number.isFinite(y))
+    .sort((a, b) => a - b);
+}
+
+let holidayMemo: HolidayInfo | null = null;
+
+/** 节假日集合 = 内置清单 ∪ 本地缓存 ∪ 配置里手工追加的日期（都只含「工作日放假日」）。 */
+function getHolidays(): HolidayInfo {
+  const signature = `${configSignature()}|${holidayCacheSignature()}`;
+  if (holidayMemo && holidayMemo.signature === signature) return holidayMemo;
+  const set = new Set<string>();
+  const add = (list: unknown): void => {
+    if (!Array.isArray(list)) return;
+    for (const date of list) {
+      if (typeof date !== 'string' || !DATE_RE.test(date)) continue;
+      set.add(date); // 内置清单与本地缓存会有重叠，用 Set 去重，天数最后再统计
+    }
+  };
+  for (const year of yearKeys(BUILTIN)) add(BUILTIN.years?.[String(year)]);
+  const cache = readHolidayCache();
+  for (const year of yearKeys(cache)) add(cache.years?.[String(year)]);
+  const extra = getConfig().holidays;
+  add(extra);
+  const counts: Record<string, number> = {};
+  for (const date of set) {
+    const year = date.slice(0, 4);
+    counts[year] = (counts[year] ?? 0) + 1;
+  }
+  const cacheAt = cache.updatedAt ? new Date(cache.updatedAt).getTime() : 0;
+  holidayMemo = {
+    set,
+    counts,
+    builtinYears: yearKeys(BUILTIN),
+    cacheYears: yearKeys(cache),
+    extra: extra.length,
+    updatedAt: Number.isFinite(cacheAt) && cacheAt > 0 ? cacheAt : null,
+    signature,
+  };
+  return holidayMemo;
+}
+
+/** 北京日期（YYYY-MM-DD）：UTC+8 之后取日期部分。 */
+const beijingDate = (date: Date): string => new Date(date.getTime() + 8 * 3_600_000).toISOString().slice(0, 10);
+
+/**
+ * 峰时：UTC 周一至周五 01:00–04:00、06:00–10:00（北京时间 09:00–12:00、14:00–18:00）；
+ * 其余时段（含周末与中国法定节假日全天）为谷时（半价）。
+ * 峰时段不跨北京午夜，所以用 UTC 周几判断与官方口径等价。
+ */
+function isPeak(date: Date, holidays: Set<string>): boolean {
   const day = date.getUTCDay();
   if (day === 0 || day === 6) return false;
+  if (holidays.has(beijingDate(date))) return false;
   const h = date.getUTCHours();
   return (h >= 1 && h < 4) || (h >= 6 && h < 10);
+}
+
+const HOLIDAY_SOURCES = [
+  'https://raw.githubusercontent.com/NateScarlet/holiday-cn/master',
+  'https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master',
+];
+const HOLIDAY_SYNC_TIMEOUT_MS = 10_000;
+
+/** 抓某一年的工作日放假日；空占位文件（次年未公布）或网络失败返回 null。 */
+async function fetchHolidayYear(year: number): Promise<string[] | null> {
+  const weekend = (date: string): boolean => {
+    const day = new Date(`${date}T00:00:00Z`).getUTCDay();
+    return day === 0 || day === 6;
+  };
+  for (const base of HOLIDAY_SOURCES) {
+    try {
+      const res = await fetch(`${base}/${year}.json`, {
+        headers: { accept: 'application/json', 'user-agent': 'openchamber-session-usage' },
+        signal: AbortSignal.timeout(HOLIDAY_SYNC_TIMEOUT_MS),
+      });
+      if (!res.ok) continue;
+      const json = (await res.json()) as { days?: Array<{ date?: unknown; isOffDay?: unknown }> };
+      const dates = (Array.isArray(json.days) ? json.days : [])
+        .filter((d) => d && d.isOffDay === true && typeof d.date === 'string' && DATE_RE.test(d.date) && !weekend(d.date))
+        .map((d) => d.date as string)
+        .sort();
+      if (dates.length) return dates;
+    } catch {
+      // 换下一个镜像
+    }
+  }
+  return null;
+}
+
+/** 用户主动触发：抓「内置/缓存已有的年份 + 今年 + 明年」，合并写入本地缓存。 */
+async function syncHolidays(): Promise<{ synced: number[]; failed: number[] }> {
+  const info = getHolidays();
+  const thisYear = new Date().getUTCFullYear();
+  const years = [...new Set([...info.builtinYears, ...info.cacheYears, thisYear, thisYear + 1])].sort((a, b) => a - b);
+  const cache = readHolidayCache();
+  const merged: Record<string, string[]> = {};
+  for (const year of yearKeys(cache)) merged[String(year)] = [...(cache.years?.[String(year)] ?? [])];
+  const synced: number[] = [];
+  const failed: number[] = [];
+  for (const year of years) {
+    const dates = await fetchHolidayYear(year);
+    if (dates) {
+      merged[String(year)] = dates;
+      synced.push(year);
+    } else if (!merged[String(year)]?.length) {
+      failed.push(year);
+    }
+  }
+  const payload: HolidayFile = {
+    source: 'https://github.com/NateScarlet/holiday-cn (MIT)',
+    updatedAt: new Date().toISOString(),
+    note: '仅收录「落在工作日的法定放假日」；周末与调休补班日由周末规则覆盖。',
+    years: merged,
+  };
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  const tmp = `${HOLIDAY_CACHE_FILE}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  renameSync(tmp, HOLIDAY_CACHE_FILE);
+  holidayMemo = null;
+  return { synced, failed };
 }
 
 /** DeepSeek 官方价（元）：input 按未命中、cacheRead 按命中、output+reasoning 按输出价；缓存写不计费。 */
@@ -335,6 +630,7 @@ function getData(): UsageData {
   }
   try {
     const data = loadFull(dbPath);
+    seedBilling(data); // 首次运行按旧规则播种计费白名单
     cached = { data, at: now, usedAt: now, dbPath };
     return data;
   } catch (err) {
@@ -362,8 +658,9 @@ type ModelFold = {
   requests: number;
   tokens: Tokens;
   cost: number; // OpenCode 记账 USD
-  tier: Tier | null;
-  cny: number; // DeepSeek 官方价人民币（非 DeepSeek 恒为 0）
+  tier: Tier | null; // 官方计费时才是 flash/pro，其余为 null
+  billing: BillingMode;
+  cny: number; // DeepSeek 官方价人民币（未走官方计费时恒为 0）
   peakCny: number;
   offCny: number;
 };
@@ -381,7 +678,7 @@ type Fold = {
   models: Map<string, ModelFold>;
 };
 
-function foldRows(rows: UsageRow[]): Fold {
+function foldRows(rows: UsageRow[], holidays: Set<string>): Fold {
   const fold: Fold = {
     requests: 0,
     tokens: emptyTokens(),
@@ -395,8 +692,9 @@ function foldRows(rows: UsageRow[]): Fold {
     models: new Map(),
   };
   for (const row of rows) {
-    const tier = tierOf(row.model);
-    const peak = tier !== null && row.ts > 0 ? isPeak(new Date(row.ts)) : false;
+    const billing = billingModeOf(row.provider, row.model);
+    const tier = billing === 'official' ? tierOf(row.model) : null;
+    const peak = tier !== null && row.ts > 0 ? isPeak(new Date(row.ts), holidays) : false;
     const cny = messageOfficialCost(row.tokens, tier, peak);
 
     fold.requests += 1;
@@ -422,6 +720,7 @@ function foldRows(rows: UsageRow[]): Fold {
         tokens: emptyTokens(),
         cost: 0,
         tier,
+        billing,
         cny: 0,
         peakCny: 0,
         offCny: 0,
@@ -463,6 +762,7 @@ function modelsOf(fold: Fold) {
       requests: m.requests,
       tokens: { ...m.tokens, total: tokenTotal(m.tokens) },
       cost: m.cost, // 原字段：OpenCode 记账 USD
+      billing: m.billing, // official=官方峰谷价；recorded=OpenCode 记账
       currency: m.tier ? ('CNY' as const) : ('USD' as const), // 该行展示币种
       amount: m.tier ? m.cny : m.cost, // 该行展示金额（自身币种）
       official: m.tier ? { cny: m.cny, peakCny: m.peakCny, offCny: m.offCny } : null,
@@ -526,8 +826,9 @@ function buildSessionReport(data: UsageData, sessionId: string) {
     }
   }
 
-  const foldMain = foldRows(mainRows);
-  const foldTotal = foldRows(treeRows);
+  const holidays = getHolidays().set;
+  const foldMain = foldRows(mainRows, holidays);
+  const foldTotal = foldRows(treeRows, holidays);
 
   let lastMessageAt = 0;
   for (const r of treeRows) if (r.ts > lastMessageAt) lastMessageAt = r.ts;
@@ -536,7 +837,7 @@ function buildSessionReport(data: UsageData, sessionId: string) {
     .map((id) => {
       const cm = data.meta.get(id);
       const rows = childBuckets.get(id) ?? [];
-      const fold = foldRows(rows);
+      const fold = foldRows(rows, holidays);
       let lastChildTs = 0;
       for (const r of rows) if (r.ts > lastChildTs) lastChildTs = r.ts;
       return {
@@ -570,7 +871,8 @@ function buildSessionReport(data: UsageData, sessionId: string) {
       peakWindowUtc: PEAK_WINDOW_UTC,
       peakWindowLocal: PEAK_WINDOW_LOCAL,
       cnyPerMillion: PRICING,
-      note: 'DeepSeek 消息按官方峰谷价重算人民币（缓存写不计费）；其他模型为 OpenCode 记账 USD；不做汇率换算。',
+      holidayYears: getHolidays().builtinYears,
+      note: '白名单里的模型按 DeepSeek 官方峰谷价重算人民币（周末与中国法定节假日按谷价，缓存写不计费）；其余模型为 OpenCode 记账 USD；不做汇率换算。',
     },
     session: {
       id: sessionId,
@@ -615,7 +917,106 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.end(body);
 }
 
-const server = createServer((req, res) => {
+type CatalogEntry = { provider: string; model: string; requests: number; billing: BillingMode; officialPriced: boolean };
+
+/** 库里出现过的所有 provider/model（面板下拉选项），带请求数与当前计费方式。 */
+function catalogOf(data: UsageData): CatalogEntry[] {
+  const map = new Map<string, CatalogEntry>();
+  for (const row of data.rows) {
+    const key = pairKey(row.provider, row.model);
+    const found = map.get(key);
+    if (found) {
+      found.requests += 1;
+      continue;
+    }
+    map.set(key, {
+      provider: row.provider,
+      model: row.model,
+      requests: 1,
+      billing: billingModeOf(row.provider, row.model),
+      officialPriced: !isFreeModel(row.model) && tierOf(row.model) !== null,
+    });
+  }
+  return [...map.values()].sort(
+    (a, b) => b.requests - a.requests || a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model),
+  );
+}
+
+function configSnapshot() {
+  let catalog: CatalogEntry[] = [];
+  try {
+    catalog = catalogOf(getData()); // 首次读库会顺带播种白名单，所以放在 getConfig 之前
+  } catch {
+    catalog = []; // 没有数据库也允许改配置
+  }
+  const config = getConfig();
+  const holidays = getHolidays();
+  return {
+    ok: true as const,
+    config: {
+      version: 1 as const,
+      seeded: config.seeded,
+      billingModels: config.billingModels,
+      holidays: config.holidays,
+    },
+    catalog,
+    holidays: {
+      counts: holidays.counts,
+      builtinYears: holidays.builtinYears,
+      cacheYears: holidays.cacheYears,
+      extra: holidays.extra,
+      updatedAt: holidays.updatedAt,
+    },
+    paths: { config: CONFIG_FILE, holidayCache: HOLIDAY_CACHE_FILE },
+  };
+}
+
+/** 去重 + 清洗面板传来的白名单。 */
+function sanitizeRules(value: unknown): BillingModel[] {
+  const list = Array.isArray(value) ? value : [];
+  const seen = new Set<string>();
+  const rules: BillingModel[] = [];
+  for (const item of list) {
+    const rule = normalizeRule(item);
+    if (!rule) continue;
+    const key = pairKey(rule.provider, rule.model);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rules.push(rule);
+  }
+  return rules;
+}
+
+function readJsonBody(req: IncomingMessage, limit = 256 * 1024): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new HttpError(413, 'body-too-large', '请求体过大'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8').trim();
+      if (!text) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(text));
+      } catch {
+        reject(new HttpError(400, 'bad-json', '请求体不是合法 JSON'));
+      }
+    });
+    req.on('error', (err) => reject(err));
+  });
+}
+
+const server = createServer(async (req, res) => {
   try {
     if (TOKEN) {
       const auth = req.headers.authorization ?? '';
@@ -649,6 +1050,39 @@ const server = createServer((req, res) => {
         return;
       }
       sendJson(res, 200, report);
+      return;
+    }
+
+    if (url.pathname === '/config') {
+      if (req.method === 'GET') {
+        sendJson(res, 200, configSnapshot());
+        return;
+      }
+      if (req.method === 'PUT') {
+        const parsed = await readJsonBody(req);
+        const patch = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+        const next: Config = { ...getConfig(), seeded: true }; // 用户动过配置就不再自动播种
+        if ('billingModels' in patch) next.billingModels = sanitizeRules(patch.billingModels);
+        if ('holidays' in patch) {
+          const list = Array.isArray(patch.holidays) ? patch.holidays : [];
+          next.holidays = [...new Set(list.filter((d): d is string => typeof d === 'string' && DATE_RE.test(d)))].sort();
+        }
+        if (typeof patch.seeded === 'boolean') next.seeded = patch.seeded;
+        setConfig(next);
+        sendJson(res, 200, configSnapshot());
+        return;
+      }
+      sendJson(res, 405, { ok: false, error: 'method-not-allowed' });
+      return;
+    }
+
+    if (url.pathname === '/holidays/sync') {
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { ok: false, error: 'method-not-allowed' });
+        return;
+      }
+      const result = await syncHolidays();
+      sendJson(res, 200, { ok: true, synced: result.synced, failed: result.failed, holidays: configSnapshot().holidays });
       return;
     }
 

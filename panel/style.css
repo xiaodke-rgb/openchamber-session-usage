@@ -250,6 +250,54 @@ details.children .child-list {
   font-variant-numeric: tabular-nums;
 }
 
+/* 计费模型设置 / 节假日 */
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.settings .rules {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings .rule {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.settings .rule-field {
+  min-width: 0;
+}
+
+.settings .rule-del {
+  flex: none;
+}
+
+.settings .rule-note {
+  font-size: 10.5px;
+  line-height: 1.5;
+  opacity: 0.55;
+}
+
+.settings .holiday-line {
+  font-size: 11px;
+  opacity: 0.62;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings .rule-add,
+.settings .holiday-sync {
+  display: flex;
+}
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
