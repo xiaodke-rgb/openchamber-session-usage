@@ -3,7 +3,7 @@
  * 展示「当前打开的会话」的会话级用量：KPI、按模型拆分、子代理合并/明细、prompt 大小曲线。
  */
 import { connectHost } from '@openchamber/sdk';
-import { dayProgress, daySegments, nextSwitch, phaseAt, stripText, type PeakWindow, type Phase, type WindowData } from '../shared/window';
+import { blockHours, blockProgress, dayProgress, daySegments, nextSwitch, phaseAt, stripText, type Phase, type WindowData } from '../shared/window';
 import {
   applyHostReady,
   mountBanner,
@@ -793,9 +793,9 @@ function applyConfigPayload(next: ConfigPayload): void {
   updateSettingsVisibility();
 }
 
-/** 一天 24 小时的轨道：峰段橙色、其余蓝色；周末/节假日整条蓝。指针按当前时刻滑动。 */
-function paintPeakTrack(phase: Phase, windows: PeakWindow[]): void {
-  const segs = daySegments(phase, windows);
+/** 一天 24 小时的轨道：峰段橙色、其余蓝色；周末/节假日整条蓝。指针周末按整段两天、节假日按整个假期走。 */
+function paintPeakTrack(phase: Phase, data: WindowData, now: number): void {
+  const segs = daySegments(phase, data.peakWindows);
   const sig = segs.map((s) => `${s.from}-${s.to}-${s.peak ? 1 : 0}`).join('|');
   if (sig !== peakSig) {
     peakSig = sig;
@@ -807,7 +807,8 @@ function paintPeakTrack(phase: Phase, windows: PeakWindow[]): void {
     }
     peakTrackEl.append(peakMarkerEl);
   }
-  peakMarkerEl.style.left = `${dayProgress(Date.now())}%`;
+  const pos = phase === 'weekend' || phase === 'holiday' ? blockProgress(now, data) : dayProgress(now);
+  peakMarkerEl.style.left = `${pos}%`;
 }
 
 /** 峰谷胶囊条：轨道（峰橙 / 谷蓝）+ 随时间移动的指针 + 文案。 */
@@ -823,9 +824,16 @@ function renderPeak(): void {
   peakEl.dataset.phase = phase;
   peakEl.classList.toggle('peak', phase === 'peak');
   peakEl.classList.toggle('off', phase !== 'peak');
-  paintPeakTrack(phase, windowData.peakWindows);
-  peakChipEl.textContent = stripText(now, windowData, lang);
-  peakEl.title = `DeepSeek 峰谷：${stripText(now, windowData, lang)}`;
+  paintPeakTrack(phase, windowData, now);
+  const text = stripText(now, windowData, lang);
+  peakChipEl.textContent = text;
+  const block =
+    phase === 'weekend' || phase === 'holiday'
+      ? lang === 'zh'
+        ? ` · 本段 ${blockHours(now, windowData)} 小时`
+        : ` · ${blockHours(now, windowData)}h block`
+      : '';
+  peakEl.title = `DeepSeek ${lang === 'zh' ? '峰谷' : 'peak/off-peak'}：${text}${block}`;
 }
 
 async function loadConfig(): Promise<void> {

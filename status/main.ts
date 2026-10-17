@@ -5,7 +5,7 @@
  */
 import { connectHost } from '@openchamber/sdk';
 import { applyHostReady, mountBanner, mountButton, type BannerHandle, type ButtonHandle } from '@openchamber/sdk/ui';
-import { dayProgress, daySegments, nextSwitch, phaseAt, stripText, type PeakWindow, type Phase, type WindowData } from '../shared/window';
+import { blockHours, blockProgress, dayProgress, daySegments, nextSwitch, phaseAt, stripText, type Phase, type WindowData } from '../shared/window';
 
 // ---------------------------------------------------------------------------
 // 类型（与 service/main.ts 的响应一致）
@@ -271,9 +271,9 @@ function render(report: Report | null, state: 'no-session' | 'loading' | 'empty'
   syncHeight();
 }
 
-/** 一天 24 小时的轨道：峰段橙色、其余蓝色；周末/节假日整条蓝。指针按当前时刻滑动。 */
-function paintPeakTrack(phase: Phase, windows: PeakWindow[]): void {
-  const segs = daySegments(phase, windows);
+/** 一天 24 小时的轨道：峰段橙色、其余蓝色；周末/节假日整条蓝。指针周末按整段两天、节假日按整个假期走。 */
+function paintPeakTrack(phase: Phase, data: WindowData, now: number): void {
+  const segs = daySegments(phase, data.peakWindows);
   const sig = segs.map((s) => `${s.from}-${s.to}-${s.peak ? 1 : 0}`).join('|');
   if (sig !== peakSig) {
     peakSig = sig;
@@ -285,7 +285,8 @@ function paintPeakTrack(phase: Phase, windows: PeakWindow[]): void {
     }
     peakTrackEl.append(peakMarkerEl);
   }
-  peakMarkerEl.style.left = `${dayProgress(Date.now())}%`;
+  const pos = phase === 'weekend' || phase === 'holiday' ? blockProgress(now, data) : dayProgress(now);
+  peakMarkerEl.style.left = `${pos}%`;
 }
 
 /** 峰谷胶囊条：窄栏用短名称，完整文案进 title。 */
@@ -300,9 +301,12 @@ function renderPeak(): void {
     peakEl.dataset.phase = phase;
     peakEl.classList.toggle('peak', phase === 'peak');
     peakEl.classList.toggle('off', phase !== 'peak');
-    paintPeakTrack(phase, data.peakWindows);
+    paintPeakTrack(phase, data, now);
+    peakEl.title =
+      phase === 'weekend' || phase === 'holiday'
+        ? `${stripText(now, data, lang)} · 本段 ${blockHours(now, data)} 小时`
+        : stripText(now, data, lang);
     peakChipEl.textContent = stripText(now, data, lang, true);
-    peakEl.title = stripText(now, data, lang);
   }
   if (show !== peakShown) {
     peakShown = show;

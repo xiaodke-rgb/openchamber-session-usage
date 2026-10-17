@@ -124,6 +124,36 @@ export function dayProgress(ts: number): number {
   return (beijingParts(ts).msOfDay / DAY_MS) * 100;
 }
 
+/** 当前谷价区块内的进度百分比：周末是整段两天、节假日是整个假期（含相邻周末），指针按整段走。 */
+export function blockProgress(ts: number, data: WindowData): number {
+  const { start, end } = offBlock(ts, data);
+  const span = end - start;
+  if (span <= 0) return 0;
+  return Math.min(100, Math.max(0, ((ts - start) / span) * 100));
+}
+
+/** 当前谷价区块的起点与终点（北京时间整天，可跨多天）。 */
+export function offBlock(ts: number, data: WindowData): { start: number; end: number } {
+  const holidays = new Set(data.holidays);
+  const dayIndex = Math.floor((ts + CN_OFFSET) / DAY_MS);
+  const isOff = (idx: number): boolean => {
+    const d = new Date(idx * DAY_MS);
+    const wd = d.getUTCDay();
+    return wd === 0 || wd === 6 || holidays.has(d.toISOString().slice(0, 10));
+  };
+  let s = dayIndex;
+  let e = dayIndex;
+  while (isOff(s - 1)) s -= 1;
+  while (isOff(e + 1)) e += 1;
+  return { start: s * DAY_MS - CN_OFFSET, end: (e + 1) * DAY_MS - CN_OFFSET };
+}
+
+/** 当前谷价区块的小时数（tooltip 用）。 */
+export function blockHours(ts: number, data: WindowData): number {
+  const { start, end } = offBlock(ts, data);
+  return Math.round((end - start) / 3_600_000);
+}
+
 /** 一天 24 小时的轨道分段：峰段为 true。周末/节假日整天没有峰段，返回单段谷色。 */
 export function daySegments(phase: Phase, windows: PeakWindow[]): Array<{ from: number; to: number; peak: boolean }> {
   if (phase === 'weekend' || phase === 'holiday') return [{ from: 0, to: 1440, peak: false }];

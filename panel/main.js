@@ -1422,6 +1422,30 @@
   function dayProgress(ts) {
     return beijingParts(ts).msOfDay / DAY_MS * 100;
   }
+  function blockProgress(ts, data) {
+    const { start, end } = offBlock(ts, data);
+    const span = end - start;
+    if (span <= 0) return 0;
+    return Math.min(100, Math.max(0, (ts - start) / span * 100));
+  }
+  function offBlock(ts, data) {
+    const holidays = new Set(data.holidays);
+    const dayIndex = Math.floor((ts + CN_OFFSET) / DAY_MS);
+    const isOff = (idx) => {
+      const d = new Date(idx * DAY_MS);
+      const wd = d.getUTCDay();
+      return wd === 0 || wd === 6 || holidays.has(d.toISOString().slice(0, 10));
+    };
+    let s = dayIndex;
+    let e = dayIndex;
+    while (isOff(s - 1)) s -= 1;
+    while (isOff(e + 1)) e += 1;
+    return { start: s * DAY_MS - CN_OFFSET, end: (e + 1) * DAY_MS - CN_OFFSET };
+  }
+  function blockHours(ts, data) {
+    const { start, end } = offBlock(ts, data);
+    return Math.round((end - start) / 36e5);
+  }
   function daySegments(phase, windows) {
     if (phase === "weekend" || phase === "holiday") return [{ from: 0, to: 1440, peak: false }];
     const out = [];
@@ -2905,8 +2929,8 @@ ${GUEST_UI_LOOK_CSS}`;
     renderPeak();
     updateSettingsVisibility();
   }
-  function paintPeakTrack(phase, windows) {
-    const segs = daySegments(phase, windows);
+  function paintPeakTrack(phase, data, now) {
+    const segs = daySegments(phase, data.peakWindows);
     const sig = segs.map((s) => `${s.from}-${s.to}-${s.peak ? 1 : 0}`).join("|");
     if (sig !== peakSig) {
       peakSig = sig;
@@ -2918,7 +2942,8 @@ ${GUEST_UI_LOOK_CSS}`;
       }
       peakTrackEl.append(peakMarkerEl);
     }
-    peakMarkerEl.style.left = `${dayProgress(Date.now())}%`;
+    const pos = phase === "weekend" || phase === "holiday" ? blockProgress(now, data) : dayProgress(now);
+    peakMarkerEl.style.left = `${pos}%`;
   }
   function renderPeak() {
     if (!built) return;
@@ -2932,9 +2957,11 @@ ${GUEST_UI_LOOK_CSS}`;
     peakEl.dataset.phase = phase;
     peakEl.classList.toggle("peak", phase === "peak");
     peakEl.classList.toggle("off", phase !== "peak");
-    paintPeakTrack(phase, windowData.peakWindows);
-    peakChipEl.textContent = stripText(now, windowData, lang);
-    peakEl.title = `DeepSeek \u5CF0\u8C37\uFF1A${stripText(now, windowData, lang)}`;
+    paintPeakTrack(phase, windowData, now);
+    const text = stripText(now, windowData, lang);
+    peakChipEl.textContent = text;
+    const block = phase === "weekend" || phase === "holiday" ? lang === "zh" ? ` \xB7 \u672C\u6BB5 ${blockHours(now, windowData)} \u5C0F\u65F6` : ` \xB7 ${blockHours(now, windowData)}h block` : "";
+    peakEl.title = `DeepSeek ${lang === "zh" ? "\u5CF0\u8C37" : "peak/off-peak"}\uFF1A${text}${block}`;
   }
   async function loadConfig() {
     if (!built) return;

@@ -10,7 +10,7 @@ var import_node_sqlite = require("node:sqlite");
 // service/holidays.json
 var holidays_default = {
   source: "https://github.com/NateScarlet/holiday-cn (MIT)",
-  updatedAt: "2026-10-17T13:48:22.280Z",
+  updatedAt: "2026-10-17T13:54:10.934Z",
   note: "\u4EC5\u6536\u5F55\u300C\u843D\u5728\u5DE5\u4F5C\u65E5\u7684\u6CD5\u5B9A\u653E\u5047\u65E5\u300D\uFF1B\u5468\u672B\u4E0E\u8C03\u4F11\u8865\u73ED\u65E5\u7531\u5468\u672B\u89C4\u5219\u8986\u76D6\u3002",
   years: {
     "2026": [
