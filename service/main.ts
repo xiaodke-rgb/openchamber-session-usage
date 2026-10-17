@@ -51,7 +51,13 @@ type UsageRow = {
   cost: number;
 };
 
-type SessionMeta = { parentId: string | null; title: string; created: number };
+type SessionMeta = {
+  parentId: string | null;
+  title: string;
+  created: number;
+  /** session_v2.fork_session_id：非空表示这个会话是从别的会话 fork 出来的 */
+  forkSessionId: string | null;
+};
 
 type UsageData = {
   schema: Schema;
@@ -478,7 +484,7 @@ SELECT id,
   json_extract(data,'$.tokens.cache.write') AS cache_write,
   json_extract(data,'$.cost') AS cost
 FROM session_message
-WHERE type='assistant'`;
+WHERE type IN ('assistant','compaction')`;
 
 const ROW_SELECT_V1 = `
 SELECT id,
@@ -517,7 +523,7 @@ function rowToUsage(raw: Record<string, unknown>): UsageRow | null {
   };
 }
 
-/** 全量或增量（time_created >= sinceMs）读取 assistant 消息。全模型，无 LIKE 过滤。 */
+/** 全量或增量（time_created >= sinceMs）读取计费行（assistant 消息 + compaction 压缩请求）。全模型，无 LIKE 过滤。 */
 function loadRows(db: DatabaseSync, schema: Schema, sinceMs?: number): UsageRow[] {
   const base = schema === 'v2' ? ROW_SELECT_V2 : ROW_SELECT_V1;
   const sql = typeof sinceMs === 'number' ? `${base} AND time_created >= ?` : base;
@@ -533,7 +539,8 @@ function loadRows(db: DatabaseSync, schema: Schema, sinceMs?: number): UsageRow[
 
 function loadMeta(db: DatabaseSync, schema: Schema): { meta: Map<string, SessionMeta>; children: Map<string, string[]> } {
   const table = schema === 'v2' ? 'session_v2' : 'session';
-  const raw = db.prepare(`SELECT id, parent_id AS parentId, title, time_created AS created FROM ${table}`).all() as Record<
+  const forkCol = schema === 'v2' ? ', fork_session_id AS forkId' : ''; // 1.x 没有 fork
+  const raw = db.prepare(`SELECT id, parent_id AS parentId, title, time_created AS created${forkCol} FROM ${table}`).all() as Record<
     string,
     unknown
   >[];
@@ -547,6 +554,7 @@ function loadMeta(db: DatabaseSync, schema: Schema): { meta: Map<string, Session
       parentId,
       title: typeof r.title === 'string' && r.title ? r.title : '',
       created: num(r.created),
+      forkSessionId: typeof r.forkId === 'string' && r.forkId ? r.forkId : null,
     });
     if (parentId) {
       const list = children.get(parentId);
@@ -804,9 +812,19 @@ function buildSessionReport(data: UsageData, sessionId: string) {
   const childBuckets = new Map<string, UsageRow[]>();
   for (const id of directChildren) childBuckets.set(id, []);
 
+  // fork 会话：复制过来的历史消息 id 形如 `msg_<fork事件id>_<父会话seq>`（普通消息 id 没有下划线后缀），
+  // 它们带着父会话的 token / cost，按消息聚合会把同一批用量再算一遍，所以默认只统计 fork 之后新增的部分。
+  const forkSessionId = meta.forkSessionId;
+  const copyIdRe = /^msg_[A-Za-z0-9]+_\d+$/;
+  const copiedRows: UsageRow[] = [];
+
   // 主会话行 + 子代理行（归到所属的一级子会话桶）
   for (const row of data.rows) {
     if (row.sid === sessionId) {
+      if (forkSessionId && copyIdRe.test(row.id)) {
+        copiedRows.push(row);
+        continue;
+      }
       mainRows.push(row);
       treeRows.push(row);
       continue;
@@ -826,10 +844,22 @@ function buildSessionReport(data: UsageData, sessionId: string) {
     }
   }
 
+  // 自检：复制来的消息必须都早于 fork 的创建时间。对不上说明 id 规则变了 → 退回旧口径（全量算）而不是悄悄算错。
+  let forkFiltered = false;
+  if (forkSessionId && copiedRows.length) {
+    forkFiltered = copiedRows.every((r) => r.ts > 0 && r.ts < meta.created);
+    if (!forkFiltered) {
+      for (const r of copiedRows) {
+        mainRows.push(r);
+        treeRows.push(r);
+      }
+    }
+  }
+
   const holidays = getHolidays().set;
   const foldMain = foldRows(mainRows, holidays);
   const foldTotal = foldRows(treeRows, holidays);
-
+  const foldInherited = forkFiltered ? foldRows(copiedRows, holidays) : null;
   let lastMessageAt = 0;
   for (const r of treeRows) if (r.ts > lastMessageAt) lastMessageAt = r.ts;
 
@@ -883,6 +913,17 @@ function buildSessionReport(data: UsageData, sessionId: string) {
       childCount: directChildren.length,
       descendantCount: descendants.size,
     },
+    // fork 会话：inherited = 从父会话复制过来的历史（默认不计入 main/total，单独给出便于追溯）
+    fork: forkSessionId
+      ? {
+          isFork: true,
+          parentSessionId: forkSessionId,
+          filtered: forkFiltered,
+          inherited: foldInherited
+            ? { ...toAgg(foldInherited), byModel: modelsOf(foldInherited) }
+            : null,
+        }
+      : null,
     main: { ...toAgg(foldMain), byModel: modelsOf(foldMain), trend: mainTrend },
     total: { ...toAgg(foldTotal), byModel: modelsOf(foldTotal), trend: totalTrend },
     children,

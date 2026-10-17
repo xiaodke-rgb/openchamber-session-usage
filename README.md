@@ -60,7 +60,7 @@ node service/main.js                      # 需要 OPENCHAMBER_SERVICE_PORT / OP
 
 | 数据 | 来源 |
 |---|---|
-| 用量 | `~/.local/share/opencode/opencode.db`（可用 `OPENCODE_DB` 覆盖）：OpenCode 2.x 读 `session_v2` + `session_message` 的 assistant 消息，1.x 读 `session` + `message`。**全模型，无过滤** |
+| 用量 | `~/.local/share/opencode/opencode.db`（可用 `OPENCODE_DB` 覆盖）：OpenCode 2.x 读 `session_v2` + `session_message` 的 assistant 消息和 compaction（上下文压缩请求，独立计费），1.x 读 `session` + `message`。**全模型，无过滤** |
 | 费用（计费列表内的模型） | 按 DeepSeek 官方中文价目重算**人民币**（价目表与峰谷算法与 deepseek-usage 扩展保持一致，见下） |
 | 费用（其余模型） | 每条消息 `data.cost`（OpenCode 自己按供应商价目记录的美元值） |
 | 计费列表 | `~/.config/openchamber/session-usage.json`（`SESSION_USAGE_CONFIG` 可覆盖），由面板的「计费模型设置」维护 |
@@ -75,6 +75,7 @@ node service/main.js                      # 需要 OPENCHAMBER_SERVICE_PORT / OP
   - 计费项：`input` 按未命中价、`cacheRead` 按命中价、`output + reasoning` 按输出价；**缓存写不计费**
   - 子代理消息各按各自时间戳判峰谷
 - **其余模型**：OpenCode 记账的 USD `cost`，不换算
+- **fork 会话**：fork 时从父会话复制过来的历史消息（id 形如 `msg_<fork事件id>_<父seq>`）不计入本会话用量，只统计 fork 之后真正新增的部分；被剔除的那段在响应的 `fork.inherited` 里单独给出。复制消息若出现异常（时间戳晚于 fork 创建时间），自动退回「全量统计」并在 `fork.filtered` 标 false，不静默算错
 - 计费列表首次运行时按旧规则播种（`model.id` 以 `deepseek` 开头且不含 `free` 的模型），之后完全以配置文件为准；列表为空 = 全部走 OpenCode 记账
 - **不做汇率换算**；面板/status 显示规则：只有人民币 → `¥x.xxxx`；人民币 + 美元 → `¥x.xxxx + $y`；只有美元 → `$y`
 
@@ -85,7 +86,7 @@ node service/main.js                      # 需要 OPENCHAMBER_SERVICE_PORT / OP
 HTTP 路由（仅 `127.0.0.1:${OPENCHAMBER_SERVICE_PORT}`，`Authorization: Bearer ${OPENCHAMBER_SERVICE_TOKEN}`）：
 
 - `GET /health` → `ok`
-- `GET /session?sessionId=ses_…` → 会话报告：`main`（仅主会话）/ `total`（含递归子代理）/ `children[]` / `byModel[]` / `trend[]` 曲线点。费用字段：`cost`（全部消息的 OpenCode USD）、`costCny` + `costCnyPeak`/`costCnyOff`（官方计费部分的人民币及峰/谷拆分）、`costUsdOther`（记账部分的 USD）、`hasDeepseek`/`hasOther`；`byModel[]` 每行带 `billing`（`official`/`recorded`）/`currency`/`amount`/`official`；响应含 `pricing` 元数据（含 `holidayYears`）
+- `GET /session?sessionId=ses_…` → 会话报告：`main`（仅主会话）/ `total`（含递归子代理）/ `children[]` / `byModel[]` / `trend[]` 曲线点。费用字段：`cost`（全部消息的 OpenCode USD）、`costCny` + `costCnyPeak`/`costCnyOff`（官方计费部分的人民币及峰/谷拆分）、`costUsdOther`（记账部分的 USD）、`hasDeepseek`/`hasOther`；`byModel[]` 每行带 `billing`（`official`/`recorded`）/`currency`/`amount`/`official`；响应含 `pricing` 元数据（含 `holidayYears`）、`fork`（fork 会话的父会话 id、是否已过滤、被剔除的继承历史汇总）
 - `GET /config` → `config`（计费列表 + `holidays`）+ `catalog`（本机数据库里出现过的 `provider/model` 与请求数）+ `holidays`（各年天数、内置/缓存年份、上次同步时间）+ `paths`
 - `PUT /config` → 存 `{ billingModels?, holidays? }`，立即生效
 - `POST /holidays/sync` → 联网同步节假日（唯一会发起外网请求的入口，仅用户点击时调用）

@@ -10,7 +10,7 @@ var import_node_sqlite = require("node:sqlite");
 // service/holidays.json
 var holidays_default = {
   source: "https://github.com/NateScarlet/holiday-cn (MIT)",
-  updatedAt: "2026-10-16T16:38:02.733Z",
+  updatedAt: "2026-10-17T12:36:57.490Z",
   note: "\u4EC5\u6536\u5F55\u300C\u843D\u5728\u5DE5\u4F5C\u65E5\u7684\u6CD5\u5B9A\u653E\u5047\u65E5\u300D\uFF1B\u5468\u672B\u4E0E\u8C03\u4F11\u8865\u73ED\u65E5\u7531\u5468\u672B\u89C4\u5219\u8986\u76D6\u3002",
   years: {
     "2026": [
@@ -341,7 +341,7 @@ SELECT id,
   json_extract(data,'$.tokens.cache.write') AS cache_write,
   json_extract(data,'$.cost') AS cost
 FROM session_message
-WHERE type='assistant'`;
+WHERE type IN ('assistant','compaction')`;
 var ROW_SELECT_V1 = `
 SELECT id,
   session_id AS sid,
@@ -391,7 +391,8 @@ function loadRows(db, schema, sinceMs) {
 }
 function loadMeta(db, schema) {
   const table = schema === "v2" ? "session_v2" : "session";
-  const raw = db.prepare(`SELECT id, parent_id AS parentId, title, time_created AS created FROM ${table}`).all();
+  const forkCol = schema === "v2" ? ", fork_session_id AS forkId" : "";
+  const raw = db.prepare(`SELECT id, parent_id AS parentId, title, time_created AS created${forkCol} FROM ${table}`).all();
   const meta = /* @__PURE__ */ new Map();
   const children = /* @__PURE__ */ new Map();
   for (const r of raw) {
@@ -401,7 +402,8 @@ function loadMeta(db, schema) {
     meta.set(id, {
       parentId,
       title: typeof r.title === "string" && r.title ? r.title : "",
-      created: num(r.created)
+      created: num(r.created),
+      forkSessionId: typeof r.forkId === "string" && r.forkId ? r.forkId : null
     });
     if (parentId) {
       const list = children.get(parentId);
@@ -610,8 +612,15 @@ function buildSessionReport(data, sessionId) {
   const treeRows = [];
   const childBuckets = /* @__PURE__ */ new Map();
   for (const id of directChildren) childBuckets.set(id, []);
+  const forkSessionId = meta.forkSessionId;
+  const copyIdRe = /^msg_[A-Za-z0-9]+_\d+$/;
+  const copiedRows = [];
   for (const row of data.rows) {
     if (row.sid === sessionId) {
+      if (forkSessionId && copyIdRe.test(row.id)) {
+        copiedRows.push(row);
+        continue;
+      }
       mainRows.push(row);
       treeRows.push(row);
       continue;
@@ -630,9 +639,20 @@ function buildSessionReport(data, sessionId) {
       cur = m.parentId;
     }
   }
+  let forkFiltered = false;
+  if (forkSessionId && copiedRows.length) {
+    forkFiltered = copiedRows.every((r) => r.ts > 0 && r.ts < meta.created);
+    if (!forkFiltered) {
+      for (const r of copiedRows) {
+        mainRows.push(r);
+        treeRows.push(r);
+      }
+    }
+  }
   const holidays = getHolidays().set;
   const foldMain = foldRows(mainRows, holidays);
   const foldTotal = foldRows(treeRows, holidays);
+  const foldInherited = forkFiltered ? foldRows(copiedRows, holidays) : null;
   let lastMessageAt = 0;
   for (const r of treeRows) if (r.ts > lastMessageAt) lastMessageAt = r.ts;
   const children = directChildren.map((id) => {
@@ -681,6 +701,13 @@ function buildSessionReport(data, sessionId) {
       childCount: directChildren.length,
       descendantCount: descendants.size
     },
+    // fork 会话：inherited = 从父会话复制过来的历史（默认不计入 main/total，单独给出便于追溯）
+    fork: forkSessionId ? {
+      isFork: true,
+      parentSessionId: forkSessionId,
+      filtered: forkFiltered,
+      inherited: foldInherited ? { ...toAgg(foldInherited), byModel: modelsOf(foldInherited) } : null
+    } : null,
     main: { ...toAgg(foldMain), byModel: modelsOf(foldMain), trend: mainTrend },
     total: { ...toAgg(foldTotal), byModel: modelsOf(foldTotal), trend: totalTrend },
     children
