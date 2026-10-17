@@ -127,6 +127,11 @@ const PRICING: Record<Tier, TierPrice> = {
 
 const PEAK_WINDOW_UTC = '周一至周五 01:00–04:00、06:00–10:00 UTC';
 const PEAK_WINDOW_LOCAL = '北京时间 09:00–12:00、14:00–18:00（周末与中国法定节假日全天为谷价）';
+/** 峰段（北京时间当天分钟数，半开区间），供前端峰谷胶囊条使用。 */
+const PEAK_WINDOWS_MIN: Array<[number, number]> = [
+  [9 * 60, 12 * 60],
+  [14 * 60, 18 * 60],
+];
 
 /** 档位只看模型 id：以 deepseek 开头、含 pro 走 pro 档，否则 flash 档。 */
 function tierOf(model: string): Tier | null {
@@ -364,6 +369,11 @@ function isPeak(date: Date, holidays: Set<string>): boolean {
   if (holidays.has(beijingDate(date))) return false;
   const h = date.getUTCHours();
   return (h >= 1 && h < 4) || (h >= 6 && h < 10);
+}
+
+/** 前端峰谷胶囊条需要的数据：峰段（北京时间分钟）+ 节假日日期清单。 */
+function windowPayload(): { peakWindows: Array<[number, number]>; holidays: string[] } {
+  return { peakWindows: PEAK_WINDOWS_MIN, holidays: [...getHolidays().set].sort() };
 }
 
 const HOLIDAY_SOURCES = [
@@ -902,6 +912,7 @@ function buildSessionReport(data: UsageData, sessionId: string) {
       peakWindowLocal: PEAK_WINDOW_LOCAL,
       cnyPerMillion: PRICING,
       holidayYears: getHolidays().builtinYears,
+      window: windowPayload(),
       note: '白名单里的模型按 DeepSeek 官方峰谷价重算人民币（周末与中国法定节假日按谷价，缓存写不计费）；其余模型为 OpenCode 记账 USD；不做汇率换算。',
     },
     session: {
@@ -1009,6 +1020,7 @@ function configSnapshot() {
       updatedAt: holidays.updatedAt,
     },
     paths: { config: CONFIG_FILE, holidayCache: HOLIDAY_CACHE_FILE },
+    window: windowPayload(),
   };
 }
 

@@ -102,3 +102,68 @@ body {
   display: flex;
   justify-content: flex-end;
 }
+
+/* DeepSeek 峰谷胶囊条：指示条在上、文案在下 */
+.peak-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.peak-strip[hidden] {
+  display: none;
+}
+
+.peak-track {
+  position: relative;
+  display: flex;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+.peak-seg {
+  height: 100%;
+  flex: 1;
+}
+
+.peak-seg.high {
+  background: #ff9800;
+}
+
+.peak-seg.low {
+  background: #3b82f6;
+}
+
+.peak-marker {
+  position: absolute;
+  top: 0;
+  left: 75%;
+  width: 2px;
+  height: 100%;
+  background: #fff;
+  box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent);
+  transform: translateX(-50%);
+  transition: left 0.4s ease;
+  z-index: 2;
+}
+
+.peak-chip {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.peak-strip.peak .peak-chip {
+  color: #ff9800;
+}
+
+.peak-strip.off .peak-chip {
+  color: #3b82f6;
+}

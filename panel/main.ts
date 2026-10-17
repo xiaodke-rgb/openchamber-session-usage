@@ -3,6 +3,7 @@
  * 展示「当前打开的会话」的会话级用量：KPI、按模型拆分、子代理合并/明细、prompt 大小曲线。
  */
 import { connectHost } from '@openchamber/sdk';
+import { markerPct, nextSwitch, phaseAt, stripText, type WindowData } from '../shared/window';
 import {
   applyHostReady,
   mountBanner,
@@ -66,7 +67,7 @@ type Report = {
   ok: true;
   generatedAt: number;
   db: { path: string; schema: string };
-  pricing?: { peakWindowUtc: string; peakWindowLocal: string; note: string };
+  pricing?: { peakWindowUtc: string; peakWindowLocal: string; note: string; window?: WindowData };
   session: {
     id: string;
     title: string;
@@ -105,6 +106,7 @@ type ConfigPayload = {
   catalog: CatalogEntry[];
   holidays: HolidayStatus;
   paths: { config: string; holidayCache: string };
+  window?: WindowData;
 };
 
 // ---------------------------------------------------------------------------
@@ -374,6 +376,10 @@ let billingNoteEl!: HTMLElement;
 let holidayLineEl!: HTMLElement;
 let holidaySyncSlot!: HTMLElement;
 let holidayNoteEl!: HTMLElement;
+let peakEl!: HTMLElement;
+let peakMarkerEl!: HTMLElement;
+let peakChipEl!: HTMLElement;
+let windowData: WindowData | null = null;
 let billingAddHandle: ButtonHandle | null = null;
 let holidaySyncHandle: ButtonHandle | null = null;
 let childrenDetails!: HTMLDetailsElement;
@@ -425,6 +431,15 @@ function buildDom(): void {
   const modelTitle = el('div', 'section', t.byModel);
   modelsEl = el('div', 'models');
 
+  // 峰谷胶囊条（数据来自 service 的 GET /config.window，30 秒重算一次）
+  peakEl = el('div', 'peak-strip');
+  const peakTrack = el('div', 'peak-track');
+  peakMarkerEl = el('div', 'peak-marker');
+  peakTrack.append(el('div', 'peak-seg high'), el('div', 'peak-seg low'), peakMarkerEl);
+  peakChipEl = el('span', 'peak-chip', '');
+  peakEl.append(peakTrack, peakChipEl);
+  peakEl.hidden = true;
+
   // 计费模型设置 + 节假日（数据来自 service 的 GET /config）
   settingsEl = el('div', 'settings');
   settingsEl.hidden = true;
@@ -438,6 +453,7 @@ function buildDom(): void {
   holidaySyncSlot = el('div', 'holiday-sync');
   holidayNoteEl = el('div', 'rule-note', t.holidayNote);
   settingsEl.append(
+    peakEl,
     billingTitle,
     billingListEl,
     billingAddSlot,
@@ -768,10 +784,30 @@ function applyConfigPayload(next: ConfigPayload): void {
   // 本地有未保存的编辑时不覆盖正在改的行
   const dirty = config != null && rulesSignature(rules) !== rulesSignature(config.config.billingModels);
   config = next;
+  windowData = next.window ?? null;
   if (!dirty) rules = next.config.billingModels.map((r) => ({ ...r }));
   renderBilling();
   renderHolidays();
+  renderPeak();
   updateSettingsVisibility();
+}
+
+/** 峰谷胶囊条：轨道（峰橙 / 谷蓝）+ 指针 + 文案，指针档位 25% / 50% / 75%。 */
+function renderPeak(): void {
+  if (!built) return;
+  if (!windowData || windowData.peakWindows.length === 0) {
+    peakEl.hidden = true;
+    return;
+  }
+  peakEl.hidden = false;
+  const now = Date.now();
+  const phase = phaseAt(now, windowData);
+  peakEl.dataset.phase = phase;
+  peakEl.classList.toggle('peak', phase === 'peak');
+  peakEl.classList.toggle('off', phase !== 'peak');
+  peakMarkerEl.style.left = `${markerPct(phase)}%`;
+  peakChipEl.textContent = stripText(now, windowData, lang);
+  peakEl.title = `DeepSeek 峰谷：${stripText(now, windowData, lang)}`;
 }
 
 async function loadConfig(): Promise<void> {
@@ -967,6 +1003,9 @@ function boot(): void {
   setInterval(() => {
     if (!document.hidden) void refresh();
   }, 15_000);
+  setInterval(() => {
+    if (!document.hidden) renderPeak();
+  }, 30_000);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && Date.now() - lastFetchAt > 15_000) void refresh();
   });
@@ -1193,6 +1232,13 @@ function mockConfig(): ConfigPayload {
     paths: {
       config: '~/.config/openchamber/session-usage.json',
       holidayCache: '~/.config/openchamber/session-usage-holidays.json',
+    },
+    window: {
+      peakWindows: [
+        [540, 720],
+        [840, 1080],
+      ],
+      holidays: [],
     },
   };
 }

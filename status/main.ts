@@ -5,6 +5,7 @@
  */
 import { connectHost } from '@openchamber/sdk';
 import { applyHostReady, mountBanner, mountButton, type BannerHandle, type ButtonHandle } from '@openchamber/sdk/ui';
+import { markerPct, nextSwitch, phaseAt, stripText, type WindowData } from '../shared/window';
 
 // ---------------------------------------------------------------------------
 // 类型（与 service/main.ts 的响应一致）
@@ -26,6 +27,7 @@ type Report = {
   ok: true;
   generatedAt: number;
   db: { path: string; schema: string };
+  pricing?: { peakWindowLocal?: string; window?: WindowData };
   session: { id: string; title: string; childCount: number; descendantCount: number };
   main: Agg;
   total: Agg;
@@ -144,6 +146,11 @@ let footTitle!: HTMLElement;
 let footMeta!: HTMLElement;
 let bannerSlot!: HTMLElement;
 let fallbackSlot!: HTMLElement;
+let peakEl!: HTMLElement;
+let peakMarkerEl!: HTMLElement;
+let peakChipEl!: HTMLElement;
+let windowData: WindowData | null = null;
+let peakShown = false;
 let bannerHandle: BannerHandle | null = null;
 let fallbackButton: ButtonHandle | null = null;
 
@@ -186,9 +193,19 @@ function buildDom(): void {
   footTitle = el('span', 's-title', '');
   footMeta = el('span', 's-meta', '');
   foot.append(footTitle, footMeta);
+
+  // 峰谷胶囊条：指示条在上、文案在下，放在「含子代理 · 21:37 更新」那行上方
+  peakEl = el('div', 'peak-strip');
+  const peakTrack = el('div', 'peak-track');
+  peakMarkerEl = el('div', 'peak-marker');
+  peakTrack.append(el('div', 'peak-seg high'), el('div', 'peak-seg low'), peakMarkerEl);
+  peakChipEl = el('span', 'peak-chip', '');
+  peakEl.append(peakTrack, peakChipEl);
+  peakEl.hidden = true;
+
   bannerSlot = el('div', 'banner-slot');
   fallbackSlot = el('div', 'fallback-slot');
-  wrap.append(grid, foot, bannerSlot, fallbackSlot);
+  wrap.append(grid, peakEl, foot, bannerSlot, fallbackSlot);
   root.append(wrap);
 }
 
@@ -213,6 +230,8 @@ function clearBanner(): void {
 function render(report: Report | null, state: 'no-session' | 'loading' | 'empty' | 'ready' | 'error', errorText = ''): void {
   if (!built) return;
   const t = T();
+  if (report) windowData = report.pricing?.window ?? windowData;
+  renderPeak();
   if (state === 'ready' && report) {
     const a = report.total;
     cTokens.value.textContent = fmtTokens(a.tokens.total);
@@ -249,6 +268,28 @@ function render(report: Report | null, state: 'no-session' | 'loading' | 'empty'
     }
   }
   syncHeight();
+}
+
+/** 峰谷胶囊条：窄栏用短名称，完整文案进 title；指针档位 25% / 50% / 75%。 */
+function renderPeak(): void {
+  if (!built) return;
+  const data = windowData;
+  const show = data != null && data.peakWindows.length > 0;
+  peakEl.hidden = !show;
+  if (data && show) {
+    const now = Date.now();
+    const phase = phaseAt(now, data);
+    peakEl.dataset.phase = phase;
+    peakEl.classList.toggle('peak', phase === 'peak');
+    peakEl.classList.toggle('off', phase !== 'peak');
+    peakMarkerEl.style.left = `${markerPct(phase)}%`;
+    peakChipEl.textContent = stripText(now, data, lang, true);
+    peakEl.title = stripText(now, data, lang);
+  }
+  if (show !== peakShown) {
+    peakShown = show;
+    syncHeight();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +367,9 @@ function boot(): void {
   setInterval(() => {
     if (!document.hidden) void refresh();
   }, 15_000);
+  setInterval(() => {
+    if (!document.hidden) renderPeak();
+  }, 30_000);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && Date.now() - lastAt > 15_000) void refresh();
   });
@@ -413,6 +457,16 @@ function mockReport(sid: string): Report {
     ok: true,
     generatedAt: now,
     db: { path: '~/.local/share/opencode/opencode.db', schema: 'v2' },
+    pricing: {
+      peakWindowLocal: '北京时间 09:00–12:00、14:00–18:00',
+      window: {
+        peakWindows: [
+          [540, 720],
+          [840, 1080],
+        ],
+        holidays: [],
+      },
+    },
     session: { id: sid, title: '网页版 LLM 与 API Agent 搜索差异原因', childCount: 2, descendantCount: 2 },
     main: agg(77, { ...t, total: 6589807 }, money(0.4193, 0.1564, 0.2629, 0.02649, (ds ? 0.2 : 0) + (ot ? 0.02649 : 0))),
     total: agg(96, t, money(0.4528, 0.1689, 0.2839, 0.02624, (ds ? 0.22 : 0) + (ot ? 0.02624 : 0))),

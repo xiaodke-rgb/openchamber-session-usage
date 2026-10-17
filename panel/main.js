@@ -1345,6 +1345,91 @@
   var SURFACE_CONTROLLERS = ["none", "agent", "user"];
   var CONTROLLERS = new Set(SURFACE_CONTROLLERS);
 
+  // shared/window.ts
+  var DAY_MS = 864e5;
+  var CN_OFFSET = 8 * 60 * 60 * 1e3;
+  function beijingParts(ts) {
+    const d = new Date(ts + CN_OFFSET);
+    return {
+      date: d.toISOString().slice(0, 10),
+      weekday: d.getUTCDay(),
+      msOfDay: d.getUTCHours() * 36e5 + d.getUTCMinutes() * 6e4 + d.getUTCSeconds() * 1e3
+    };
+  }
+  var inPeak = (msOfDay, windows) => windows.some(([from, to]) => msOfDay >= from * 6e4 && msOfDay < to * 6e4);
+  function phaseAt(ts, data, holidaySet) {
+    const { date, weekday, msOfDay } = beijingParts(ts);
+    const holidays = holidaySet ?? new Set(data.holidays);
+    if (holidays.has(date)) return "holiday";
+    if (weekday === 0 || weekday === 6) return "weekend";
+    return inPeak(msOfDay, data.peakWindows) ? "peak" : "offpeak";
+  }
+  function nextSwitch(ts, data, holidaySet) {
+    const holidays = holidaySet ?? new Set(data.holidays);
+    const now = phaseAt(ts, data, holidays);
+    const peakNow = now === "peak";
+    const dayStart = Math.floor((ts + CN_OFFSET) / DAY_MS) * DAY_MS - CN_OFFSET;
+    const offsets = /* @__PURE__ */ new Set([0]);
+    for (const [from, to] of data.peakWindows) {
+      offsets.add(from * 6e4);
+      offsets.add(to * 6e4);
+    }
+    const candidates = [];
+    for (let d = 0; d < 15; d++) for (const off of offsets) candidates.push(dayStart + d * DAY_MS + off);
+    candidates.sort((a, b) => a - b);
+    for (const at of candidates) {
+      if (at <= ts) continue;
+      const phase = phaseAt(at, data, holidays);
+      if (phase === "peak" !== peakNow) return { phase, until: at };
+    }
+    return { phase: peakNow ? "offpeak" : "peak", until: ts + 60 * 6e4 };
+  }
+  function countdownText(until, now, lang2) {
+    const minutes = Math.max(1, Math.ceil((until - now) / 6e4));
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    if (lang2 === "zh") {
+      if (h > 0) return m > 0 ? `${h} \u5C0F\u65F6 ${m} \u5206` : `${h} \u5C0F\u65F6`;
+      return `${m} \u5206\u949F`;
+    }
+    if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+    return `${m}m`;
+  }
+  function phaseLabel(phase, lang2) {
+    const zh = {
+      holiday: "\u6CD5\u5B9A\u5047\u65E5\u2014\u2014\u5168\u8C37\u4EF7",
+      weekend: "\u5468\u672B\u65F6\u6BB5\u2014\u2014\u5168\u8C37\u4EF7",
+      peak: "\u5CF0\u65F6",
+      offpeak: "\u5E73\u4EF7"
+    };
+    const en = {
+      holiday: "Public holiday \u2014 all off-peak",
+      weekend: "Weekend \u2014 all off-peak",
+      peak: "Peak",
+      offpeak: "Off-peak"
+    };
+    return (lang2 === "zh" ? zh : en)[phase];
+  }
+  function phaseShort(phase, lang2) {
+    const zh = { holiday: "\u5047\u65E5\u5168\u8C37", weekend: "\u5468\u672B\u5168\u8C37", peak: "\u5CF0\u65F6", offpeak: "\u5E73\u4EF7" };
+    const en = { holiday: "Holiday", weekend: "Weekend", peak: "Peak", offpeak: "Off-peak" };
+    return (lang2 === "zh" ? zh : en)[phase];
+  }
+  function nextLabel(phase, lang2) {
+    if (lang2 === "zh") return phase === "peak" ? "\u540E\u8FDB\u5165\u9AD8\u5CF0" : "\u540E\u8FDB\u5165\u5E73\u4EF7";
+    return phase === "peak" ? " to peak" : " to off-peak";
+  }
+  function markerPct(phase) {
+    if (phase === "peak") return 25;
+    return phase === "offpeak" ? 75 : 50;
+  }
+  function stripText(now, data, lang2, short = false) {
+    const phase = phaseAt(now, data);
+    const next = nextSwitch(now, data);
+    const chip = short ? phaseShort(phase, lang2) : phaseLabel(phase, lang2);
+    return `${chip} \xB7 ${countdownText(next.until, now, lang2)}${nextLabel(next.phase, lang2)}`;
+  }
+
   // node_modules/@openchamber/sdk/dist/ui/theme.js
   var TOKEN_VARS = [
     ["--oc-bg", "background"],
@@ -2460,6 +2545,10 @@ ${GUEST_UI_LOOK_CSS}`;
   var holidayLineEl;
   var holidaySyncSlot;
   var holidayNoteEl;
+  var peakEl;
+  var peakMarkerEl;
+  var peakChipEl;
+  var windowData = null;
   var billingAddHandle = null;
   var holidaySyncHandle = null;
   var childrenDetails;
@@ -2504,6 +2593,13 @@ ${GUEST_UI_LOOK_CSS}`;
     kHit.card.title = t.hitTip;
     const modelTitle = el2("div", "section", t.byModel);
     modelsEl = el2("div", "models");
+    peakEl = el2("div", "peak-strip");
+    const peakTrack = el2("div", "peak-track");
+    peakMarkerEl = el2("div", "peak-marker");
+    peakTrack.append(el2("div", "peak-seg high"), el2("div", "peak-seg low"), peakMarkerEl);
+    peakChipEl = el2("span", "peak-chip", "");
+    peakEl.append(peakTrack, peakChipEl);
+    peakEl.hidden = true;
     settingsEl = el2("div", "settings");
     settingsEl.hidden = true;
     const billingTitle = el2("div", "section", t.billingTitle);
@@ -2516,6 +2612,7 @@ ${GUEST_UI_LOOK_CSS}`;
     holidaySyncSlot = el2("div", "holiday-sync");
     holidayNoteEl = el2("div", "rule-note", t.holidayNote);
     settingsEl.append(
+      peakEl,
       billingTitle,
       billingListEl,
       billingAddSlot,
@@ -2789,10 +2886,28 @@ ${GUEST_UI_LOOK_CSS}`;
   function applyConfigPayload(next) {
     const dirty = config != null && rulesSignature(rules) !== rulesSignature(config.config.billingModels);
     config = next;
+    windowData = next.window ?? null;
     if (!dirty) rules = next.config.billingModels.map((r) => ({ ...r }));
     renderBilling();
     renderHolidays();
+    renderPeak();
     updateSettingsVisibility();
+  }
+  function renderPeak() {
+    if (!built) return;
+    if (!windowData || windowData.peakWindows.length === 0) {
+      peakEl.hidden = true;
+      return;
+    }
+    peakEl.hidden = false;
+    const now = Date.now();
+    const phase = phaseAt(now, windowData);
+    peakEl.dataset.phase = phase;
+    peakEl.classList.toggle("peak", phase === "peak");
+    peakEl.classList.toggle("off", phase !== "peak");
+    peakMarkerEl.style.left = `${markerPct(phase)}%`;
+    peakChipEl.textContent = stripText(now, windowData, lang);
+    peakEl.title = `DeepSeek \u5CF0\u8C37\uFF1A${stripText(now, windowData, lang)}`;
   }
   async function loadConfig() {
     if (!built) return;
@@ -2964,6 +3079,9 @@ ${GUEST_UI_LOOK_CSS}`;
     setInterval(() => {
       if (!document.hidden) void refresh();
     }, 15e3);
+    setInterval(() => {
+      if (!document.hidden) renderPeak();
+    }, 3e4);
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && Date.now() - lastFetchAt > 15e3) void refresh();
     });
@@ -3161,6 +3279,13 @@ ${GUEST_UI_LOOK_CSS}`;
       paths: {
         config: "~/.config/openchamber/session-usage.json",
         holidayCache: "~/.config/openchamber/session-usage-holidays.json"
+      },
+      window: {
+        peakWindows: [
+          [540, 720],
+          [840, 1080]
+        ],
+        holidays: []
       }
     };
   }

@@ -10,7 +10,7 @@ var import_node_sqlite = require("node:sqlite");
 // service/holidays.json
 var holidays_default = {
   source: "https://github.com/NateScarlet/holiday-cn (MIT)",
-  updatedAt: "2026-10-17T12:36:57.490Z",
+  updatedAt: "2026-10-17T13:42:11.540Z",
   note: "\u4EC5\u6536\u5F55\u300C\u843D\u5728\u5DE5\u4F5C\u65E5\u7684\u6CD5\u5B9A\u653E\u5047\u65E5\u300D\uFF1B\u5468\u672B\u4E0E\u8C03\u4F11\u8865\u73ED\u65E5\u7531\u5468\u672B\u89C4\u5219\u8986\u76D6\u3002",
   years: {
     "2026": [
@@ -76,6 +76,10 @@ var PRICING = {
 };
 var PEAK_WINDOW_UTC = "\u5468\u4E00\u81F3\u5468\u4E94 01:00\u201304:00\u300106:00\u201310:00 UTC";
 var PEAK_WINDOW_LOCAL = "\u5317\u4EAC\u65F6\u95F4 09:00\u201312:00\u300114:00\u201318:00\uFF08\u5468\u672B\u4E0E\u4E2D\u56FD\u6CD5\u5B9A\u8282\u5047\u65E5\u5168\u5929\u4E3A\u8C37\u4EF7\uFF09";
+var PEAK_WINDOWS_MIN = [
+  [9 * 60, 12 * 60],
+  [14 * 60, 18 * 60]
+];
 function tierOf(model) {
   const m = model.toLowerCase();
   if (!m.startsWith("deepseek")) return null;
@@ -238,6 +242,9 @@ function isPeak(date, holidays) {
   if (holidays.has(beijingDate(date))) return false;
   const h = date.getUTCHours();
   return h >= 1 && h < 4 || h >= 6 && h < 10;
+}
+function windowPayload() {
+  return { peakWindows: PEAK_WINDOWS_MIN, holidays: [...getHolidays().set].sort() };
 }
 var HOLIDAY_SOURCES = [
   "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master",
@@ -690,6 +697,7 @@ function buildSessionReport(data, sessionId) {
       peakWindowLocal: PEAK_WINDOW_LOCAL,
       cnyPerMillion: PRICING,
       holidayYears: getHolidays().builtinYears,
+      window: windowPayload(),
       note: "\u767D\u540D\u5355\u91CC\u7684\u6A21\u578B\u6309 DeepSeek \u5B98\u65B9\u5CF0\u8C37\u4EF7\u91CD\u7B97\u4EBA\u6C11\u5E01\uFF08\u5468\u672B\u4E0E\u4E2D\u56FD\u6CD5\u5B9A\u8282\u5047\u65E5\u6309\u8C37\u4EF7\uFF0C\u7F13\u5B58\u5199\u4E0D\u8BA1\u8D39\uFF09\uFF1B\u5176\u4F59\u6A21\u578B\u4E3A OpenCode \u8BB0\u8D26 USD\uFF1B\u4E0D\u505A\u6C47\u7387\u6362\u7B97\u3002"
     },
     session: {
@@ -781,7 +789,8 @@ function configSnapshot() {
       extra: holidays.extra,
       updatedAt: holidays.updatedAt
     },
-    paths: { config: CONFIG_FILE, holidayCache: HOLIDAY_CACHE_FILE }
+    paths: { config: CONFIG_FILE, holidayCache: HOLIDAY_CACHE_FILE },
+    window: windowPayload()
   };
 }
 function sanitizeRules(value) {
