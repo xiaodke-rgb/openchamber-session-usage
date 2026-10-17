@@ -167,3 +167,8 @@ body {
 .peak-strip.off .peak-chip {
   color: #3b82f6;
 }
+
+.peak-strip[data-phase="weekend"] .peak-chip,
+.peak-strip[data-phase="holiday"] .peak-chip {
+  color: #34a853;
+}
