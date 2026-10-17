@@ -113,10 +113,29 @@ export function nextLabel(phase: Phase, lang: Lang): string {
   if (lang === 'zh') return phase === 'peak' ? '后进入高峰' : '后进入平价';
   return phase === 'peak' ? ' to peak' : ' to off-peak';
 }
-/** 指针档位：峰 25%、周末/节假日 50%、谷 75%。 */
+/** 指针档位：峰 25%、周末/节假日 50%、谷 75%（保留给需要离散刻度的场景）。 */
 export function markerPct(phase: Phase): number {
   if (phase === 'peak') return 25;
   return phase === 'offpeak' ? 75 : 50;
+}
+
+/** 当天已过时间的百分比（北京时间 00:00→0%，24:00→100%），指针按这个走。 */
+export function dayProgress(ts: number): number {
+  return (beijingParts(ts).msOfDay / DAY_MS) * 100;
+}
+
+/** 一天 24 小时的轨道分段：峰段为 true。周末/节假日整天没有峰段，返回单段谷色。 */
+export function daySegments(phase: Phase, windows: PeakWindow[]): Array<{ from: number; to: number; peak: boolean }> {
+  if (phase === 'weekend' || phase === 'holiday') return [{ from: 0, to: 1440, peak: false }];
+  const out: Array<{ from: number; to: number; peak: boolean }> = [];
+  let cursor = 0;
+  for (const [from, to] of [...windows].sort((a, b) => a[0] - b[0])) {
+    if (from > cursor) out.push({ from: cursor, to: from, peak: false });
+    out.push({ from, to, peak: true });
+    cursor = to;
+  }
+  if (cursor < 1440) out.push({ from: cursor, to: 1440, peak: false });
+  return out;
 }
 
 /** 一行完整文案：「周末时段——全谷价 · 35 小时 44 分后进入高峰」。 */

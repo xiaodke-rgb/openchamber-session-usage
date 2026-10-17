@@ -1904,9 +1904,20 @@ ${GUEST_UI_LOOK_CSS}`;
     if (lang2 === "zh") return phase === "peak" ? "\u540E\u8FDB\u5165\u9AD8\u5CF0" : "\u540E\u8FDB\u5165\u5E73\u4EF7";
     return phase === "peak" ? " to peak" : " to off-peak";
   }
-  function markerPct(phase) {
-    if (phase === "peak") return 25;
-    return phase === "offpeak" ? 75 : 50;
+  function dayProgress(ts) {
+    return beijingParts(ts).msOfDay / DAY_MS * 100;
+  }
+  function daySegments(phase, windows) {
+    if (phase === "weekend" || phase === "holiday") return [{ from: 0, to: 1440, peak: false }];
+    const out = [];
+    let cursor = 0;
+    for (const [from, to] of [...windows].sort((a, b) => a[0] - b[0])) {
+      if (from > cursor) out.push({ from: cursor, to: from, peak: false });
+      out.push({ from, to, peak: true });
+      cursor = to;
+    }
+    if (cursor < 1440) out.push({ from: cursor, to: 1440, peak: false });
+    return out;
   }
   function stripText(now, data, lang2, short = false) {
     const phase = phaseAt(now, data);
@@ -1998,8 +2009,10 @@ ${GUEST_UI_LOOK_CSS}`;
   var bannerSlot;
   var fallbackSlot;
   var peakEl;
+  var peakTrackEl;
   var peakMarkerEl;
   var peakChipEl;
+  var peakSig = "";
   var windowData = null;
   var peakShown = false;
   var bannerHandle = null;
@@ -2040,11 +2053,10 @@ ${GUEST_UI_LOOK_CSS}`;
     footMeta = el2("span", "s-meta", "");
     foot.append(footTitle, footMeta);
     peakEl = el2("div", "peak-strip");
-    const peakTrack = el2("div", "peak-track");
+    peakTrackEl = el2("div", "peak-track");
     peakMarkerEl = el2("div", "peak-marker");
-    peakTrack.append(el2("div", "peak-seg high"), el2("div", "peak-seg low"), peakMarkerEl);
     peakChipEl = el2("span", "peak-chip", "");
-    peakEl.append(peakTrack, peakChipEl);
+    peakEl.append(peakTrackEl, peakChipEl);
     peakEl.hidden = true;
     bannerSlot = el2("div", "banner-slot");
     fallbackSlot = el2("div", "fallback-slot");
@@ -2108,6 +2120,21 @@ ${GUEST_UI_LOOK_CSS}`;
     }
     syncHeight();
   }
+  function paintPeakTrack(phase, windows) {
+    const segs = daySegments(phase, windows);
+    const sig = segs.map((s) => `${s.from}-${s.to}-${s.peak ? 1 : 0}`).join("|");
+    if (sig !== peakSig) {
+      peakSig = sig;
+      peakTrackEl.textContent = "";
+      for (const s of segs) {
+        const seg = el2("div", `peak-seg ${s.peak ? "high" : "low"}`);
+        seg.style.width = `${(s.to - s.from) / 1440 * 100}%`;
+        peakTrackEl.append(seg);
+      }
+      peakTrackEl.append(peakMarkerEl);
+    }
+    peakMarkerEl.style.left = `${dayProgress(Date.now())}%`;
+  }
   function renderPeak() {
     if (!built) return;
     const data = windowData;
@@ -2119,7 +2146,7 @@ ${GUEST_UI_LOOK_CSS}`;
       peakEl.dataset.phase = phase;
       peakEl.classList.toggle("peak", phase === "peak");
       peakEl.classList.toggle("off", phase !== "peak");
-      peakMarkerEl.style.left = `${markerPct(phase)}%`;
+      paintPeakTrack(phase, data.peakWindows);
       peakChipEl.textContent = stripText(now, data, lang, true);
       peakEl.title = stripText(now, data, lang);
     }

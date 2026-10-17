@@ -328,7 +328,7 @@ details.children .child-list {
 
 .peak-seg {
   height: 100%;
-  flex: 1;
+  flex: none;
 }
 
 .peak-seg.high {

@@ -5,7 +5,7 @@
  */
 import { connectHost } from '@openchamber/sdk';
 import { applyHostReady, mountBanner, mountButton, type BannerHandle, type ButtonHandle } from '@openchamber/sdk/ui';
-import { markerPct, nextSwitch, phaseAt, stripText, type WindowData } from '../shared/window';
+import { dayProgress, daySegments, nextSwitch, phaseAt, stripText, type PeakWindow, type Phase, type WindowData } from '../shared/window';
 
 // ---------------------------------------------------------------------------
 // 类型（与 service/main.ts 的响应一致）
@@ -147,8 +147,10 @@ let footMeta!: HTMLElement;
 let bannerSlot!: HTMLElement;
 let fallbackSlot!: HTMLElement;
 let peakEl!: HTMLElement;
+let peakTrackEl!: HTMLElement;
 let peakMarkerEl!: HTMLElement;
 let peakChipEl!: HTMLElement;
+let peakSig = '';
 let windowData: WindowData | null = null;
 let peakShown = false;
 let bannerHandle: BannerHandle | null = null;
@@ -196,11 +198,10 @@ function buildDom(): void {
 
   // 峰谷胶囊条：指示条在上、文案在下，放在「含子代理 · 21:37 更新」那行上方
   peakEl = el('div', 'peak-strip');
-  const peakTrack = el('div', 'peak-track');
+  peakTrackEl = el('div', 'peak-track');
   peakMarkerEl = el('div', 'peak-marker');
-  peakTrack.append(el('div', 'peak-seg high'), el('div', 'peak-seg low'), peakMarkerEl);
   peakChipEl = el('span', 'peak-chip', '');
-  peakEl.append(peakTrack, peakChipEl);
+  peakEl.append(peakTrackEl, peakChipEl);
   peakEl.hidden = true;
 
   bannerSlot = el('div', 'banner-slot');
@@ -270,7 +271,24 @@ function render(report: Report | null, state: 'no-session' | 'loading' | 'empty'
   syncHeight();
 }
 
-/** 峰谷胶囊条：窄栏用短名称，完整文案进 title；指针档位 25% / 50% / 75%。 */
+/** 一天 24 小时的轨道：峰段橙色、其余蓝色；周末/节假日整条蓝。指针按当前时刻滑动。 */
+function paintPeakTrack(phase: Phase, windows: PeakWindow[]): void {
+  const segs = daySegments(phase, windows);
+  const sig = segs.map((s) => `${s.from}-${s.to}-${s.peak ? 1 : 0}`).join('|');
+  if (sig !== peakSig) {
+    peakSig = sig;
+    peakTrackEl.textContent = '';
+    for (const s of segs) {
+      const seg = el('div', `peak-seg ${s.peak ? 'high' : 'low'}`);
+      seg.style.width = `${((s.to - s.from) / 1440) * 100}%`;
+      peakTrackEl.append(seg);
+    }
+    peakTrackEl.append(peakMarkerEl);
+  }
+  peakMarkerEl.style.left = `${dayProgress(Date.now())}%`;
+}
+
+/** 峰谷胶囊条：窄栏用短名称，完整文案进 title。 */
 function renderPeak(): void {
   if (!built) return;
   const data = windowData;
@@ -282,7 +300,7 @@ function renderPeak(): void {
     peakEl.dataset.phase = phase;
     peakEl.classList.toggle('peak', phase === 'peak');
     peakEl.classList.toggle('off', phase !== 'peak');
-    peakMarkerEl.style.left = `${markerPct(phase)}%`;
+    paintPeakTrack(phase, data.peakWindows);
     peakChipEl.textContent = stripText(now, data, lang, true);
     peakEl.title = stripText(now, data, lang);
   }

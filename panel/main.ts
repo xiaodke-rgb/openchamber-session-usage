@@ -3,7 +3,7 @@
  * 展示「当前打开的会话」的会话级用量：KPI、按模型拆分、子代理合并/明细、prompt 大小曲线。
  */
 import { connectHost } from '@openchamber/sdk';
-import { markerPct, nextSwitch, phaseAt, stripText, type WindowData } from '../shared/window';
+import { dayProgress, daySegments, nextSwitch, phaseAt, stripText, type PeakWindow, type Phase, type WindowData } from '../shared/window';
 import {
   applyHostReady,
   mountBanner,
@@ -377,8 +377,10 @@ let holidayLineEl!: HTMLElement;
 let holidaySyncSlot!: HTMLElement;
 let holidayNoteEl!: HTMLElement;
 let peakEl!: HTMLElement;
+let peakTrackEl!: HTMLElement;
 let peakMarkerEl!: HTMLElement;
 let peakChipEl!: HTMLElement;
+let peakSig = '';
 let windowData: WindowData | null = null;
 let billingAddHandle: ButtonHandle | null = null;
 let holidaySyncHandle: ButtonHandle | null = null;
@@ -433,11 +435,10 @@ function buildDom(): void {
 
   // 峰谷胶囊条（数据来自 service 的 GET /config.window，30 秒重算一次）
   peakEl = el('div', 'peak-strip');
-  const peakTrack = el('div', 'peak-track');
+  peakTrackEl = el('div', 'peak-track');
   peakMarkerEl = el('div', 'peak-marker');
-  peakTrack.append(el('div', 'peak-seg high'), el('div', 'peak-seg low'), peakMarkerEl);
   peakChipEl = el('span', 'peak-chip', '');
-  peakEl.append(peakTrack, peakChipEl);
+  peakEl.append(peakTrackEl, peakChipEl);
   peakEl.hidden = true;
 
   // 计费模型设置 + 节假日（数据来自 service 的 GET /config）
@@ -792,7 +793,24 @@ function applyConfigPayload(next: ConfigPayload): void {
   updateSettingsVisibility();
 }
 
-/** 峰谷胶囊条：轨道（峰橙 / 谷蓝）+ 指针 + 文案，指针档位 25% / 50% / 75%。 */
+/** 一天 24 小时的轨道：峰段橙色、其余蓝色；周末/节假日整条蓝。指针按当前时刻滑动。 */
+function paintPeakTrack(phase: Phase, windows: PeakWindow[]): void {
+  const segs = daySegments(phase, windows);
+  const sig = segs.map((s) => `${s.from}-${s.to}-${s.peak ? 1 : 0}`).join('|');
+  if (sig !== peakSig) {
+    peakSig = sig;
+    peakTrackEl.textContent = '';
+    for (const s of segs) {
+      const seg = el('div', `peak-seg ${s.peak ? 'high' : 'low'}`);
+      seg.style.width = `${((s.to - s.from) / 1440) * 100}%`;
+      peakTrackEl.append(seg);
+    }
+    peakTrackEl.append(peakMarkerEl);
+  }
+  peakMarkerEl.style.left = `${dayProgress(Date.now())}%`;
+}
+
+/** 峰谷胶囊条：轨道（峰橙 / 谷蓝）+ 随时间移动的指针 + 文案。 */
 function renderPeak(): void {
   if (!built) return;
   if (!windowData || windowData.peakWindows.length === 0) {
@@ -805,7 +823,7 @@ function renderPeak(): void {
   peakEl.dataset.phase = phase;
   peakEl.classList.toggle('peak', phase === 'peak');
   peakEl.classList.toggle('off', phase !== 'peak');
-  peakMarkerEl.style.left = `${markerPct(phase)}%`;
+  paintPeakTrack(phase, windowData.peakWindows);
   peakChipEl.textContent = stripText(now, windowData, lang);
   peakEl.title = `DeepSeek 峰谷：${stripText(now, windowData, lang)}`;
 }
