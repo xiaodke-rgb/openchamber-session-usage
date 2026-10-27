@@ -63,7 +63,7 @@ node service/main.js                      # 需要 OPENCHAMBER_SERVICE_PORT / OP
 | 用量 | `~/.local/share/opencode/opencode.db`（可用 `OPENCODE_DB` 覆盖）：OpenCode 2.x 读 `session_v2` + `session_message` 的 assistant 消息和 compaction（上下文压缩请求，独立计费），1.x 读 `session` + `message`。**全模型，无过滤** |
 | 费用（计费列表内的模型） | 按 DeepSeek 官方中文价目重算**人民币**（价目表与峰谷算法与 deepseek-usage 扩展保持一致，见下） |
 | 费用（其余模型） | 每条消息 `data.cost`（OpenCode 自己按供应商价目记录的美元值） |
-| 计费列表 | `~/.config/openchamber/session-usage.json`（`SESSION_USAGE_CONFIG` 可覆盖），由面板的「计费模型设置」维护 |
+| 计费列表 | `~/.local/share/opencode/plugin-data/session-usage/session-usage.json`（`SESSION_USAGE_CONFIG` 可覆盖），由面板的「计费模型设置」维护 |
 | 会话树 | `session_v2.parent_id` 递归取全部子代理后代 |
 | 命中率 | `cacheRead ÷ (input + cacheRead + cacheWrite)`；分母为 0 时显示 `—` |
 
@@ -79,7 +79,7 @@ node service/main.js                      # 需要 OPENCHAMBER_SERVICE_PORT / OP
 - 计费列表首次运行时按旧规则播种（`model.id` 以 `deepseek` 开头且不含 `free` 的模型），之后完全以配置文件为准；列表为空 = 全部走 OpenCode 记账
 - **不做汇率换算**；面板/status 显示规则：只有人民币 → `¥x.xxxx`；人民币 + 美元 → `¥x.xxxx + $y`；只有美元 → `$y`
 
-节假日清单来自 [NateScarlet/holiday-cn](https://github.com/NateScarlet/holiday-cn)（MIT），只收录「落在工作日的法定放假日」——周末与调休补班日由周末规则覆盖。构建时抓取一份内置到 `service/holidays.json`，所以运行期默认离线；需要补新一年（国务院一般在上一年 11 月公布）时，点面板里的「同步节假日」联网抓一次，结果缓存在 `~/.config/openchamber/session-usage-holidays.json`。也可以在配置文件的 `holidays` 数组里手工追加 `YYYY-MM-DD`。
+节假日清单来自 [NateScarlet/holiday-cn](https://github.com/NateScarlet/holiday-cn)（MIT），只收录「落在工作日的法定放假日」——周末与调休补班日由周末规则覆盖。构建时抓取一份内置到 `service/holidays.json`，所以运行期默认离线；需要补新一年（国务院一般在上一年 11 月公布）时，点面板里的「同步节假日」联网抓一次，结果缓存在 `~/.local/share/opencode/plugin-data/session-usage/session-usage-holidays.json`。也可以在配置文件的 `holidays` 数组里手工追加 `YYYY-MM-DD`。
 
 服务只读打开数据库（`node:sqlite` 的 `DatabaseSync readOnly`，需要 node 22+ / OpenChamber 宿主内置）。首次请求全量扫描一次，之后每 15s 增量刷新（回扫最近 10 分钟的行）；快照缓存 15s，10 分钟无请求释放内存。
 
@@ -99,6 +99,6 @@ HTTP 路由（仅 `127.0.0.1:${OPENCHAMBER_SERVICE_PORT}`，`Authorization: Bear
 
 ## English
 
-An OpenChamber extension showing per-session usage for the **currently open session**: total tokens, input (cache miss), output (incl. reasoning), reasoning, cache read/write, cache hit rate, request count and cost. Models on the **billing list** (`~/.config/openchamber/session-usage.json`, editable from the panel) are recomputed in CNY from DeepSeek's official peak/off-peak price list (cache writes not billed; peak = Mon–Fri 01:00–04:00 & 06:00–10:00 UTC, off-peak at half price, weekends and Chinese statutory holidays always off-peak); every other model keeps the OpenCode-recorded USD cost, so free models such as `opencode/DeepSeek V4.1 Flash Free` show $0. No FX conversion, no network requests by default (only the manual "sync holidays" button fetches holiday data once). Also includes a per-model breakdown (each row in its own currency, tagged official/recorded), an expandable subagent list (merged by default, toggle to main-only), and an inline SVG prompt-size curve, plus a compact 4-number Work Status section. Bilingual (zh/en), follows the host theme, auto-refreshes every ~15s while visible.
+An OpenChamber extension showing per-session usage for the **currently open session**: total tokens, input (cache miss), output (incl. reasoning), reasoning, cache read/write, cache hit rate, request count and cost. Models on the **billing list** (`~/.local/share/opencode/plugin-data/session-usage/session-usage.json`, editable from the panel) are recomputed in CNY from DeepSeek's official peak/off-peak price list (cache writes not billed; peak = Mon–Fri 01:00–04:00 & 06:00–10:00 UTC, off-peak at half price, weekends and Chinese statutory holidays always off-peak); every other model keeps the OpenCode-recorded USD cost, so free models such as `opencode/DeepSeek V4.1 Flash Free` show $0. No FX conversion, no network requests by default (only the manual "sync holidays" button fetches holiday data once). Also includes a per-model breakdown (each row in its own currency, tagged official/recorded), an expandable subagent list (merged by default, toggle to main-only), and an inline SVG prompt-size curve, plus a compact 4-number Work Status section. Bilingual (zh/en), follows the host theme, auto-refreshes every ~15s while visible.
 
 Install: OpenChamber → Settings → Extensions → paste this folder → **Allow and enable** (needs the local-service permission). Requires OpenChamber 2.0.0+.

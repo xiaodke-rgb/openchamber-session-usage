@@ -3,7 +3,7 @@
  *
  * 只读读取本机 opencode.db（OpenCode 2.x：session_v2 / session_message；1.x：session / message），
  * 按「当前会话 + 递归子代理子会话」聚合 token、缓存命中与费用：
- *   - 计费白名单（~/.config/openchamber/session-usage.json 里的 provider/model）按 DeepSeek
+ *   - 计费白名单（~/.local/share/opencode/plugin-data/session-usage/session-usage.json 里的 provider/model）按 DeepSeek
  *     官方峰谷价重算人民币（价目/时段逻辑与 deepseek-usage 扩展一致，周末与法定节假日按谷价）
  *   - 其余模型沿用 OpenCode 记录的 USD cost（免费模型即 0）
  *   不做汇率换算；除用户主动触发的 /holidays/sync 外不联网。
@@ -165,9 +165,37 @@ type Config = {
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-const CONFIG_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'openchamber');
-const CONFIG_FILE = process.env.SESSION_USAGE_CONFIG || join(CONFIG_DIR, 'session-usage.json');
-const HOLIDAY_CACHE_FILE = join(CONFIG_DIR, 'session-usage-holidays.json');
+/** 运行期数据目录：~/.local/share/opencode/plugin-data/session-usage（不碰 ~/.config/opencode，避免配置重载循环）。 */
+const DATA_DIR = join(homedir(), '.local', 'share', 'opencode', 'plugin-data', 'session-usage');
+const CONFIG_FILE = process.env.SESSION_USAGE_CONFIG || join(DATA_DIR, 'session-usage.json');
+const HOLIDAY_CACHE_FILE = join(DATA_DIR, 'session-usage-holidays.json');
+
+/** 旧版本把这两个文件放在 ~/.config/openchamber，首次启动复制到新目录（旧文件保留作备份）。 */
+const LEGACY_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'openchamber');
+const LEGACY_CONFIG_FILE = join(LEGACY_DIR, 'session-usage.json');
+const LEGACY_HOLIDAY_FILE = join(LEGACY_DIR, 'session-usage-holidays.json');
+
+/** 建数据目录 + 一次性迁移旧文件。 */
+function ensureDataDir(): void {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    for (const [from, to] of [
+      [LEGACY_CONFIG_FILE, CONFIG_FILE],
+      [LEGACY_HOLIDAY_FILE, HOLIDAY_CACHE_FILE],
+    ]) {
+      if (from === to || existsSync(to) || !existsSync(from)) continue;
+      try {
+        writeFileSync(to, readFileSync(from));
+      } catch {
+        /* 迁移失败不影响使用，下次启动再试 */
+      }
+    }
+  } catch {
+    /* 目录建不出来时让后续读写各自报错 */
+  }
+}
+
+ensureDataDir();
 
 const emptyConfig = (): Config => ({ version: 1, seeded: false, billingModels: [], holidays: [] });
 
@@ -240,7 +268,7 @@ function getConfig(): Config {
 
 /** 写配置（原子替换）；写盘失败会抛错，由路由转成 500。 */
 function setConfig(config: Config): void {
-  mkdirSync(CONFIG_DIR, { recursive: true });
+  mkdirSync(DATA_DIR, { recursive: true });
   const tmp = `${CONFIG_FILE}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
   renameSync(tmp, CONFIG_FILE);
@@ -433,7 +461,7 @@ async function syncHolidays(): Promise<{ synced: number[]; failed: number[] }> {
     note: '仅收录「落在工作日的法定放假日」；周末与调休补班日由周末规则覆盖。',
     years: merged,
   };
-  mkdirSync(CONFIG_DIR, { recursive: true });
+  mkdirSync(DATA_DIR, { recursive: true });
   const tmp = `${HOLIDAY_CACHE_FILE}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   renameSync(tmp, HOLIDAY_CACHE_FILE);

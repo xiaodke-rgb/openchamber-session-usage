@@ -1256,8 +1256,8 @@ function mockConfig(): ConfigPayload {
     catalog,
     holidays: { counts: { '2026': 19 }, builtinYears: [2026], cacheYears: [], extra: 0, updatedAt: null },
     paths: {
-      config: '~/.config/openchamber/session-usage.json',
-      holidayCache: '~/.config/openchamber/session-usage-holidays.json',
+      config: '~/.local/share/opencode/plugin-data/session-usage/session-usage.json',
+      holidayCache: '~/.local/share/opencode/plugin-data/session-usage/session-usage-holidays.json',
     },
     window: {
       peakWindows: [
