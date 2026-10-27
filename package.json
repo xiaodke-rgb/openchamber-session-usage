@@ -1,6 +1,6 @@
 {
   "name": "openchamber-session-usage",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "会话级 token / 缓存命中 / 费用面板（OpenChamber 扩展）",
   "scripts": {
